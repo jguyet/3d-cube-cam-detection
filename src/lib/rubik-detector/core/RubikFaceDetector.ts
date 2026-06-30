@@ -11,6 +11,9 @@ export class RubikFaceDetector {
   private decomposer = new FaceDecomposer();
 
   process(image: ImageData): FrameResult {
+    // Background removal here is the silhouette's own SATURATION test (the cube
+    // is saturated, walls/cabinets are not). Motion-based subtraction is NOT
+    // used: it would grey out a cube held still and pick the background instead.
     const sil = this.silhouette.detect(image);
     if (!sil.hull) {
       return { hull: null, fillFrac: 0, corners: 0, balance: 0, sup2: 0, weak2: 0, cand1: [], cand2: null, cand3: null };

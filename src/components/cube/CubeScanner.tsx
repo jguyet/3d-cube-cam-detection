@@ -6,6 +6,9 @@ import {
   FrameGrabber,
   RubikFaceDetector,
   CubeTracker,
+  ShapeDetector,
+  ShapeTracker,
+  CubePoseFromShapes,
   DebugOverlay,
 } from "@/lib/rubik-detector";
 
@@ -21,6 +24,9 @@ export default function CubeScanner() {
   const grabberRef = useRef<FrameGrabber | null>(null);
   const detectorRef = useRef<RubikFaceDetector | null>(null);
   const trackerRef = useRef<CubeTracker | null>(null);
+  const shapeDetectorRef = useRef<ShapeDetector | null>(null);
+  const shapeTrackerRef = useRef<ShapeTracker | null>(null);
+  const poseFromShapesRef = useRef<CubePoseFromShapes | null>(null);
   const overlayRef = useRef<DebugOverlay | null>(null);
   const rafRef = useRef(0);
   const lastRef = useRef(0);
@@ -87,6 +93,49 @@ export default function CubeScanner() {
 
     const det = tracker.update(detector.process(image));
     overlay.draw(ctx, det);
+
+    // Detect the sticker shapes inside the cube zone → track them AND fit an
+    // exact 3D cube from their grid (orientation from the stickers, not the
+    // jittery silhouette).
+    const shapeDetector = shapeDetectorRef.current;
+    const shapeTracker = shapeTrackerRef.current;
+    const poseFromShapes = poseFromShapesRef.current;
+    if (det.hull && det.hull.length >= 3 && shapeDetector && shapeTracker && poseFromShapes) {
+      const shapes = shapeDetector.detect(image, 160, det.hull);
+      const tracked = shapeTracker.update(shapes);
+      for (const tr of tracked) {
+        const c = tr.corners;
+        ctx.beginPath();
+        ctx.moveTo(c[0].x, c[0].y);
+        for (let i = 1; i < c.length; i++) ctx.lineTo(c[i].x, c[i].y);
+        ctx.closePath();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(0,255,200,0.95)";
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255,224,0,${Math.min(0.95, 0.4 + tr.age * 0.08)})`;
+        ctx.font = "bold 10px ui-monospace, monospace";
+        ctx.fillText(String(tr.id), tr.center.x - 4, tr.center.y + 3);
+      }
+
+      const pose = poseFromShapes.fit(shapes, det.hull);
+      if (pose) {
+        const c = pose.corners;
+        for (const [i, j] of pose.edges) {
+          ctx.beginPath();
+          ctx.moveTo(c[i].x, c[i].y);
+          ctx.lineTo(c[j].x, c[j].y);
+          ctx.strokeStyle = "rgba(255,90,230,0.95)";
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+        }
+      }
+    } else {
+      shapeTrackerRef.current?.reset();
+      // keep the pose's memory: tick the hold so it persists a few frames
+      // through brief silhouette dropouts instead of despawning.
+      poseFromShapesRef.current?.fit([]);
+    }
+
     startTransition(() => setNFaces(det.nFaces));
   };
 
@@ -99,6 +148,9 @@ export default function CubeScanner() {
       grabberRef.current = new FrameGrabber(360);
       detectorRef.current = new RubikFaceDetector();
       trackerRef.current = new CubeTracker();
+      shapeDetectorRef.current = new ShapeDetector();
+      shapeTrackerRef.current = new ShapeTracker();
+      poseFromShapesRef.current = new CubePoseFromShapes();
       overlayRef.current = new DebugOverlay();
       setStatus("scanning");
       lastRef.current = 0;
