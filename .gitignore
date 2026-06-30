@@ -46,3 +46,4 @@ _*.mjs
 _*.ts
 
 /public/backgrounds/
+/public/models/*.onnx
