@@ -109,10 +109,18 @@ def main():
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--val", type=float, default=0.1)
+    ap.add_argument("--export-only", action="store_true", help="load best.pt and export ONNX, no training")
     a = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     print("device:", dev)
+
+    if a.export_only:
+        net = CubeNet().to(dev)
+        net.load_state_dict(torch.load("best.pt", map_location=dev))
+        export_onnx(net, dev)
+        print("exported cube_detector.onnx from best.pt")
+        return
 
     full = CubeDataset(a.data, train=True)
     n_val = max(1, int(len(full) * a.val))
@@ -151,18 +159,24 @@ def main():
         if vtot < best:
             best = vtot
             torch.save(net.state_dict(), "best.pt")
-            export_onnx(net, dev)
-    print("done. best val", best, "-> cube_detector.onnx")
+            try:
+                export_onnx(net, dev)
+            except Exception as e:
+                print("  (onnx export skipped:", type(e).__name__, "— `pip install onnx onnxscript`)")
+    print("done. best val", best, "-> best.pt / cube_detector.onnx")
 
 def export_onnx(net, dev):
     net.eval()
-    dummy = torch.randn(1, 3, IMG, IMG, device=dev)
+    net.to("cpu")  # ONNX export is safest from CPU
+    dummy = torch.randn(1, 3, IMG, IMG)
     torch.onnx.export(
         net, dummy, "cube_detector.onnx",
         input_names=["image"], output_names=["pred"],
         dynamic_axes={"image": {0: "batch"}, "pred": {0: "batch"}},
         opset_version=17,
     )
+    net.to(dev)
+    print("  -> cube_detector.onnx")
 
 if __name__ == "__main__":
     main()
