@@ -173,7 +173,7 @@ def export_onnx(net, dev):
         net, dummy, "cube_detector.onnx",
         input_names=["image"], output_names=["pred"],
         dynamic_axes={"image": {0: "batch"}, "pred": {0: "batch"}},
-        opset_version=17,
+        opset_version=18,
     )
     net.to(dev)
     print("  -> cube_detector.onnx")
