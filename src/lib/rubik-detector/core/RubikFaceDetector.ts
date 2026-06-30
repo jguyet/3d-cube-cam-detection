@@ -30,5 +30,7 @@ export class RubikFaceDetector {
     };
   }
 
-  dispose(): void {}
+  dispose(): void {
+    this.silhouette.reset();
+  }
 }
