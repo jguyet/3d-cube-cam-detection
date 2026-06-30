@@ -14,6 +14,8 @@ export interface TrackedShape {
   area: number;
   age: number;
   misses: number;
+  vx: number;
+  vy: number;
 }
 
 export class ShapeTracker {
@@ -21,10 +23,12 @@ export class ShapeTracker {
   private nextId = 1;
   private maxMisses: number;
   private minAge: number;
+  private holdFrames: number;
 
-  constructor(maxMisses = 4, minAge = 2) {
+  constructor(maxMisses = 6, minAge = 2, holdFrames = 3) {
     this.maxMisses = maxMisses;
     this.minAge = minAge;
+    this.holdFrames = holdFrames;
   }
 
   update(shapes: Shape[]): TrackedShape[] {
@@ -37,23 +41,28 @@ export class ShapeTracker {
       for (let ti = 0; ti < this.tracks.length; ti++) {
         if (usedTracks.has(ti)) continue;
         const tr = this.tracks[ti];
-        const reach = Math.max(12, Math.sqrt(tr.area) * 0.8);
+        // gate on the residual to the velocity-PREDICTED position (survives
+        // fast hand motion); area is a soft penalty so distance dominates.
+        const px = tr.center.x + tr.vx, py = tr.center.y + tr.vy;
+        const reach = Math.max(28, Math.sqrt(tr.area) * 1.6);
         for (let si = 0; si < shapes.length; si++) {
           if (usedShapes.has(si)) continue;
           const sh = shapes[si];
-          const dd = dist(tr.center, sh.center);
+          const dd = Math.hypot(px - sh.center.x, py - sh.center.y);
           if (dd > reach) continue;
           const ratio = tr.area > sh.area ? tr.area / sh.area : sh.area / tr.area;
-          if (ratio > 1.8) continue;
-          const score = dd * ratio;
+          if (ratio > 2.5) continue; // survives a 2:1 same-colour merge/split
+          const score = dd * Math.sqrt(ratio);
           if (score < bestScore) { bestScore = score; bestTrack = ti; bestShape = si; }
         }
       }
       if (bestTrack === -1) break;
       const tr = this.tracks[bestTrack];
       const sh = shapes[bestShape];
+      const ncx = this.mix(tr.center.x, sh.center.x, 0.4), ncy = this.mix(tr.center.y, sh.center.y, 0.4);
+      tr.vx = ncx - tr.center.x; tr.vy = ncy - tr.center.y;
       tr.corners = this.smoothCorners(tr.corners, sh.corners, 0.4);
-      tr.center = { x: this.mix(tr.center.x, sh.center.x, 0.4), y: this.mix(tr.center.y, sh.center.y, 0.4) };
+      tr.center = { x: ncx, y: ncy };
       tr.area = this.mix(tr.area, sh.area, 0.4);
       tr.age += 1;
       tr.misses = 0;
@@ -65,11 +74,12 @@ export class ShapeTracker {
     for (let si = 0; si < shapes.length; si++) {
       if (usedShapes.has(si)) continue;
       const sh = shapes[si];
-      this.tracks.push({ id: this.nextId++, corners: sh.corners.slice(), center: { ...sh.center }, area: sh.area, age: 1, misses: 0 });
+      this.tracks.push({ id: this.nextId++, corners: sh.corners.slice(), center: { ...sh.center }, area: sh.area, age: 1, misses: 0, vx: 0, vy: 0 });
     }
 
     this.tracks = this.tracks.filter((t) => t.misses <= this.maxMisses);
-    return this.tracks.filter((t) => t.age >= this.minAge && t.misses === 0);
+    // hold briefly-missed tracks at their last pose (no single-frame flicker)
+    return this.tracks.filter((t) => t.age >= this.minAge && t.misses <= this.holdFrames);
   }
 
   reset(): void { this.tracks = []; }

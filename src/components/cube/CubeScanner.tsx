@@ -97,6 +97,18 @@ export default function CubeScanner() {
     // Detect the sticker shapes inside the cube zone → track them AND fit an
     // exact 3D cube from their grid (orientation from the stickers, not the
     // jittery silhouette).
+    const drawPose = (p: { corners: { x: number; y: number }[]; edges: [number, number][] }) => {
+      const c = p.corners;
+      ctx.strokeStyle = "rgba(255,90,230,0.95)";
+      ctx.lineWidth = 2.5;
+      for (const [i, j] of p.edges) {
+        ctx.beginPath();
+        ctx.moveTo(c[i].x, c[i].y);
+        ctx.lineTo(c[j].x, c[j].y);
+        ctx.stroke();
+      }
+    };
+
     const shapeDetector = shapeDetectorRef.current;
     const shapeTracker = shapeTrackerRef.current;
     const poseFromShapes = poseFromShapesRef.current;
@@ -117,23 +129,17 @@ export default function CubeScanner() {
         ctx.fillText(String(tr.id), tr.center.x - 4, tr.center.y + 3);
       }
 
-      const pose = poseFromShapes.fit(shapes, det.hull);
-      if (pose) {
-        const c = pose.corners;
-        for (const [i, j] of pose.edges) {
-          ctx.beginPath();
-          ctx.moveTo(c[i].x, c[i].y);
-          ctx.lineTo(c[j].x, c[j].y);
-          ctx.strokeStyle = "rgba(255,90,230,0.95)";
-          ctx.lineWidth = 2.5;
-          ctx.stroke();
-        }
-      }
+      // Fit the cube from the temporally-STABLE tracked stickers (suppresses
+      // stray-quad face switches), not the raw per-frame shapes.
+      const poseShapes = tracked.map((t) => ({ corners: t.corners, center: t.center, area: t.area, fill: 1 }));
+      const pose = poseFromShapes.fit(poseShapes, det.hull);
+      if (pose) drawPose(pose);
     } else {
-      shapeTrackerRef.current?.reset();
-      // keep the pose's memory: tick the hold so it persists a few frames
-      // through brief silhouette dropouts instead of despawning.
-      poseFromShapesRef.current?.fit([]);
+      // brief silhouette dropout: keep tracker + pose MEMORY and keep drawing
+      // the held cube so it doesn't despawn.
+      shapeTrackerRef.current?.update([]);
+      const held = poseFromShapesRef.current?.fit([]);
+      if (held) drawPose(held);
     }
 
     startTransition(() => setNFaces(det.nFaces));

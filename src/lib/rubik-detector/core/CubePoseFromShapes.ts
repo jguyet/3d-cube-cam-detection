@@ -31,22 +31,31 @@ export class CubePoseFromShapes {
     void _hull;
     if (shapes.length < 2) return this.hold();
 
-    // 1) group shapes by orientation angle → faces
+    // 1) group shapes by orientation angle → face candidates
     const groups = this.groupByAngle(shapes);
     if (!groups.length) return this.hold();
-    const face = groups.reduce((a, b) => (b.length > a.length ? b : a));
 
-    // 2) the dominant face's stickers → its grid edges u, v
-    const cells = this.subdivide(face);
-    const lat = this.fitFaceLattice(cells);
-    if (!lat) return this.hold();
+    // 2) score every group as a face; the most face-like (compact filled 3×3,
+    //    stray quads rejected) wins — NOT merely the group with the most quads.
+    let best: ReturnType<CubePoseFromShapes["buildFace"]> = null;
+    for (const g of groups) {
+      const cand = this.buildFace(g);
+      if (cand && (!best || cand.score > best.score)) best = cand;
+    }
+    if (!best) return this.hold();
 
     // 3) build the face quad (3×3, sized from the stickers) + orthographic depth
-    const u = lat.u, v = lat.v;
-    const TL = { x: lat.Oc.x - 0.5 * u.x - 0.5 * v.x, y: lat.Oc.y - 0.5 * u.y - 0.5 * v.y };
+    const u = best.u, v = best.v;
+    const TL = { x: best.Oc.x - 0.5 * u.x - 0.5 * v.x, y: best.Oc.y - 0.5 * u.y - 0.5 * v.y };
     const U = { x: 3 * u.x, y: 3 * u.y }, V = { x: 3 * v.x, y: 3 * v.y };
     const EC = this.depthEdge(U, V);
     if (!EC) return this.hold();
+
+    // sanity gate: reject a frame whose face size jumps wildly vs the held pose
+    if (this.smoothed) {
+      const w = Math.hypot(U.x, U.y), pw = dist(this.smoothed[0], this.smoothed[1]);
+      if (pw > 1 && (w < 0.4 * pw || w > 2.5 * pw)) return this.hold();
+    }
 
     const f0 = TL, f1 = { x: TL.x + U.x, y: TL.y + U.y }, f2 = { x: TL.x + U.x + V.x, y: TL.y + U.y + V.y }, f3 = { x: TL.x + V.x, y: TL.y + V.y };
     const bk = (p: Point2): Point2 => ({ x: p.x + EC.x, y: p.y + EC.y });
@@ -138,15 +147,12 @@ export class CubePoseFromShapes {
     let cx = 0, cy = 0; for (const c of centers) { cx += c.x; cy += c.y; } cx /= n; cy /= n;
     const coords = centers.map((c) => {
       const dx = c.x - cx, dy = c.y - cy;
-      return { i: Math.round((dx * v.y - dy * v.x) / det), j: Math.round((u.x * dy - u.y * dx) / det) };
+      return { i: Math.round((dx * v.y - dy * v.x) / det), j: Math.round((u.x * dy - u.y * dx) / det), p: c };
     });
     let mi = Infinity, mj = Infinity;
     for (const k of coords) { mi = Math.min(mi, k.i); mj = Math.min(mj, k.j); }
-    let sumI = 0, sumJ = 0;
-    for (const k of coords) { k.i -= mi; k.j -= mj; sumI += k.i; sumJ += k.j; }
-    const meanI = sumI / n, meanJ = sumJ / n;
-    const Oc = { x: cx - meanI * u.x - meanJ * v.x, y: cy - meanI * u.y - meanJ * v.y };
-    return { u, v, Oc };
+    for (const k of coords) { k.i -= mi; k.j -= mj; }
+    return { u, v, coords };
   }
 
   private depthEdge(U: Point2, V: Point2): Point2 | null {
@@ -167,28 +173,63 @@ export class CubePoseFromShapes {
     return { x: L * (ay * vz - uz * by), y: L * (uz * bx - ax * vz) };
   }
 
-  private subdivide(shapes: Shape[]): Point2[] {
-    const sides: number[] = [];
+  // One angle-group → a scored face candidate. Robust unit = median of each
+  // quad's SHORTER side (one sticker). Reject strays (edge slivers, blocks
+  // bigger than 3 cells), subdivide survivors into unit cells, fit the lattice,
+  // snap to the most-filled compact 3×3 window, and take the origin from the
+  // in-window cells only — so a stray quad can neither size nor move the face.
+  private buildFace(shapes: Shape[]): { u: Point2; v: Point2; Oc: Point2; score: number } | null {
+    const mins: number[] = [];
     for (const s of shapes) {
       const [tl, tr, br, bl] = s.corners;
-      sides.push((dist(tl, tr) + dist(bl, br)) / 2, (dist(tl, bl) + dist(tr, br)) / 2);
+      const w = (dist(tl, tr) + dist(bl, br)) / 2, h = (dist(tl, bl) + dist(tr, br)) / 2;
+      mins.push(Math.min(w, h));
     }
-    if (!sides.length) return [];
-    const sorted = sides.slice().sort((a, b) => a - b);
-    const unit = sorted[Math.floor(sorted.length * 0.15)] || 1;
+    if (!mins.length) return null;
+    const unit = mins.slice().sort((a, b) => a - b)[mins.length >> 1] || 1; // one sticker
+
     const cells: Point2[] = [];
     for (const s of shapes) {
       const [tl, tr, br, bl] = s.corners;
-      const wSide = (dist(tl, tr) + dist(bl, br)) / 2;
-      const hSide = (dist(tl, bl) + dist(tr, br)) / 2;
-      const nc = Math.max(1, Math.round(wSide / unit));
-      const nr = Math.max(1, Math.round(hSide / unit));
+      const w = (dist(tl, tr) + dist(bl, br)) / 2, h = (dist(tl, bl) + dist(tr, br)) / 2;
+      const lo = Math.min(w, h), hi = Math.max(w, h);
+      if (hi / lo > 3.4) continue;       // stray: aspect beyond a 3×1 merge (edge sliver)
+      if (lo < 0.6 * unit) continue;     // stray: thinner than a cell
+      const nc = Math.max(1, Math.round(w / unit)), nr = Math.max(1, Math.round(h / unit));
+      if (nc > 3 || nr > 3) continue;    // stray: a face block spans ≤ 3 cells
       for (let a = 0; a < nc; a++)
         for (let b = 0; b < nr; b++) {
           const top = lerp(tl, tr, (a + 0.5) / nc), bot = lerp(bl, br, (a + 0.5) / nc);
           cells.push(lerp(top, bot, (b + 0.5) / nr));
         }
     }
-    return cells;
+    if (cells.length < 3) return null;
+
+    const lat = this.fitFaceLattice(cells);
+    if (!lat) return null;
+    const { u, v, coords } = lat;
+
+    // slide a 3×3 window to maximise distinct filled cells
+    let oi = 0, oj = 0, filled = 0;
+    const maxI = Math.max(...coords.map((c) => c.i)), maxJ = Math.max(...coords.map((c) => c.j));
+    for (let i = 0; i <= Math.max(0, maxI - 2); i++)
+      for (let j = 0; j <= Math.max(0, maxJ - 2); j++) {
+        const seen = new Set<number>();
+        for (const c of coords)
+          if (c.i >= i && c.i <= i + 2 && c.j >= j && c.j <= j + 2) seen.add((c.i - i) * 3 + (c.j - j));
+        if (seen.size > filled) { filled = seen.size; oi = i; oj = j; }
+      }
+
+    // origin from in-window cells only (least-squares of TL cell centre)
+    let n = 0, sx = 0, sy = 0;
+    for (const c of coords)
+      if (c.i >= oi && c.i <= oi + 2 && c.j >= oj && c.j <= oj + 2) {
+        sx += c.p.x - (c.i - oi) * u.x - (c.j - oj) * v.x;
+        sy += c.p.y - (c.i - oi) * u.y - (c.j - oj) * v.y; n++;
+      }
+    if (n < 3) return null;
+    const Oc = { x: sx / n, y: sy / n };
+    const score = filled / 9 - 0.5 * (coords.length - n) / 9; // full grid, few strays
+    return { u, v, Oc, score };
   }
 }

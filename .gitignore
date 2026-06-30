@@ -42,3 +42,5 @@ next-env.d.ts
 
 # local prototype harnesses
 _*.mjs
+
+_*.ts
