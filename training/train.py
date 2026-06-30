@@ -166,6 +166,8 @@ def main():
     print("done. best val", best, "-> best.pt / cube_detector.onnx")
 
 def export_onnx(net, dev):
+    import os
+    import onnx
     net.eval()
     net.to("cpu")  # ONNX export is safest from CPU
     dummy = torch.randn(1, 3, IMG, IMG)
@@ -175,8 +177,14 @@ def export_onnx(net, dev):
         dynamic_axes={"image": {0: "batch"}, "pred": {0: "batch"}},
         opset_version=18,
     )
+    # Consolidate any external-weights file into ONE self-contained .onnx so it
+    # loads in onnxruntime-web (the browser can't fetch cube_detector.onnx.data).
+    m = onnx.load("cube_detector.onnx")  # pulls in external data if present
+    onnx.save_model(m, "cube_detector.onnx", save_as_external_data=False)
+    if os.path.exists("cube_detector.onnx.data"):
+        os.remove("cube_detector.onnx.data")
     net.to(dev)
-    print("  -> cube_detector.onnx")
+    print("  -> cube_detector.onnx (single self-contained file)")
 
 if __name__ == "__main__":
     main()
