@@ -44,8 +44,8 @@ export class Silhouette {
       const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
       const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
       luma[j] = y;
-       cbMap[j] = cb;
-       crMap[j] = cr;
+      cbMap[j] = cb;
+      crMap[j] = cr;
       if (v <= 0.22 || y <= 58) darkGapMask[j] = 1;
       // hue
       let hue = 0;
@@ -76,6 +76,7 @@ export class Silhouette {
       const neutralYcc = Math.abs(cb - 128) <= 24 && Math.abs(cr - 128) <= 24;
       const whiteBright = y >= 134 && v >= 0.5 && mx >= 150 && mn >= 88;
       if (!skin && neutralRgb && neutralYcc && whiteBright && s <= 0.4) {
+        whiteSeed[j] = 1;
         whiteCandidate[j] = 1;
         continue;
       }
@@ -94,21 +95,16 @@ export class Silhouette {
     }
 
     const movingNow = this.computeMovingMask(luma, cbMap, crMap, w, h);
-    const colorCore = this.largestComponentMask(colorMask, w, h);
-    const colorAnchor = colorCore ?? colorMask;
-    const colorSupport = this.dilate(colorAnchor, w, h, 5);
+    const cubeSeed = new Uint8Array(w * h);
+    for (let i = 0; i < cubeSeed.length; i++) cubeSeed[i] = colorMask[i] || whiteSeed[i] ? 1 : 0;
+
+    const support = this.dilate(cubeSeed, w, h, 6);
     const darkSupport = this.dilate(darkGapMask, w, h, 2);
     const skinExpanded = this.dilate(skinMask, w, h, 2);
-    this.promoteWhiteSeeds(whiteSeed, whiteCandidate, colorAnchor, colorSupport, darkSupport, skinExpanded, w, h);
-    const cubeSeed = new Uint8Array(w * h);
-    for (let i = 0; i < cubeSeed.length; i++) cubeSeed[i] = colorAnchor[i] || whiteSeed[i] ? 1 : 0;
-
-    const support = this.dilate(cubeSeed, w, h, 4);
     const movingRecent = this.movingRecentMask(w, h);
     const filteredWhite = this.filterWhiteComponents(
       whiteCandidate,
-      whiteSeed,
-      colorAnchor,
+      cubeSeed,
       support,
       darkSupport,
       skinExpanded,
@@ -117,12 +113,12 @@ export class Silhouette {
       w,
       h,
     );
-    const whiteExpanded = this.dilate(filteredWhite, w, h, 1);
-    let mask: Uint8Array = new Uint8Array(colorAnchor);
+    const whiteExpandedFiltered = this.dilate(filteredWhite, w, h, 1);
+    let mask: Uint8Array = new Uint8Array(colorMask);
     for (let y = 3; y < h - 3; y++)
       for (let x = 3; x < w - 3; x++) {
         const i = y * w + x;
-        if (!whiteExpanded[i] || !support[i] || skinExpanded[i]) continue;
+        if (!whiteExpandedFiltered[i] || !support[i] || skinExpanded[i]) continue;
         let seedNeighbours = 0;
         let darkNeighbours = 0;
         let contrastScore = 0;
@@ -137,14 +133,14 @@ export class Silhouette {
             contrastScore += Math.abs(luma[i] - luma[n]);
           }
         const meanContrast = contrastScore / 48;
-        if (seedNeighbours >= 2 && darkNeighbours >= 2 && (meanContrast >= 10 || brightNeighbours >= 5 || seedNeighbours >= 6)) {
+        if (seedNeighbours >= 2 && darkNeighbours >= 3 && (meanContrast >= 12 || brightNeighbours >= 7 || seedNeighbours >= 6)) {
           mask[i] = 1;
         }
       }
 
     // Opening (erode→dilate) removes thin finger bridges and speckle, then a
     // dilation closes the lattice of stickers into one solid blob.
-    mask = this.erode(mask, w, h, 1);
+    mask = this.erode(mask, w, h, 2);
     mask = this.dilate(mask, w, h, 2);
     mask = this.dilate(mask, w, h, 3);
     for (let i = 0; i < mask.length; i++) {
@@ -215,53 +211,9 @@ export class Silhouette {
     return best;
   }
 
-  private largestComponentMask(m: Uint8Array, w: number, h: number): Uint8Array | null {
-    const vis = new Uint8Array(w * h);
-    const stack: number[] = [];
-    let best: number[] | null = null;
-    let bestN = 0;
-
-    for (let s = 0; s < w * h; s++) {
-      if (!m[s] || vis[s]) continue;
-      vis[s] = 1;
-      stack.length = 0;
-      stack.push(s);
-      const component: number[] = [];
-      while (stack.length) {
-        const n = stack.pop()!;
-        component.push(n);
-        const nx = n % w;
-        const ny = (n / w) | 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            if (!dx && !dy) continue;
-            const mx = nx + dx;
-            const my = ny + dy;
-            if (mx < 0 || my < 0 || mx >= w || my >= h) continue;
-            const mm = my * w + mx;
-            if (m[mm] && !vis[mm]) {
-              vis[mm] = 1;
-              stack.push(mm);
-            }
-          }
-        }
-      }
-      if (component.length > bestN) {
-        bestN = component.length;
-        best = component;
-      }
-    }
-
-    if (!best) return null;
-    const out = new Uint8Array(w * h);
-    for (const i of best) out[i] = 1;
-    return out;
-  }
-
   private filterWhiteComponents(
     white: Uint8Array,
-    whiteSeed: Uint8Array,
-    colorMask: Uint8Array,
+    cubeSeed: Uint8Array,
     support: Uint8Array,
     darkSupport: Uint8Array,
     skin: Uint8Array,
@@ -288,7 +240,6 @@ export class Silhouette {
       let touchSkin = 0;
       let movingHits = 0;
       let recentHits = 0;
-      let seedHits = 0;
 
       while (stack.length) {
         const n = stack.pop()!;
@@ -298,7 +249,6 @@ export class Silhouette {
         if (support[n]) supportHits++;
         if (movingNow[n]) movingHits++;
         if (movingRecent[n]) recentHits++;
-        if (whiteSeed[n]) seedHits++;
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             if (!dx && !dy) continue;
@@ -306,7 +256,7 @@ export class Silhouette {
             const my = ny + dy;
             if (mx < 0 || my < 0 || mx >= w || my >= h) continue;
             const mm = my * w + mx;
-            if (colorMask[mm]) seedAdj++;
+            if (cubeSeed[mm]) seedAdj++;
             if (darkSupport[mm]) darkBorder++;
             if (skin[mm]) touchSkin++;
             if (white[mm] && !vis[mm]) {
@@ -320,44 +270,15 @@ export class Silhouette {
       const size = component.length;
       const plausibleSize = size >= 3 && size <= maxSize;
       const anchored = supportHits >= Math.max(2, Math.floor(size * 0.15)) && seedAdj >= 2;
+      const structured = darkBorder >= Math.max(6, Math.floor(size * 0.35));
       const skinSafe = touchSkin <= Math.max(2, Math.floor(size * 0.1));
       const temporal = movingHits >= 1 || recentHits >= Math.max(1, Math.floor(size * 0.1));
-      const structured = darkBorder >= Math.max(6, Math.floor(size * 0.35));
-      const seededStrong = seedHits >= Math.max(1, Math.floor(size * 0.18)) && darkBorder >= Math.max(8, Math.floor(size * 0.5));
-      if (!plausibleSize || !anchored || !structured || !skinSafe || !(temporal || seededStrong)) continue;
+      const staticStructured = anchored && structured && darkBorder >= Math.max(10, size);
+      if (!plausibleSize || !anchored || !skinSafe || !(temporal || staticStructured)) continue;
       for (const i of component) out[i] = 1;
     }
 
     return out;
-  }
-
-  private promoteWhiteSeeds(
-    out: Uint8Array,
-    whiteCandidate: Uint8Array,
-    colorMask: Uint8Array,
-    colorSupport: Uint8Array,
-    darkSupport: Uint8Array,
-    skin: Uint8Array,
-    w: number,
-    h: number,
-  ): void {
-    for (let y = 2; y < h - 2; y++) {
-      for (let x = 2; x < w - 2; x++) {
-        const i = y * w + x;
-        if (!whiteCandidate[i] || skin[i] || !colorSupport[i]) continue;
-        let colorNeighbours = 0;
-        let darkNeighbours = 0;
-        for (let dy = -2; dy <= 2; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
-            if (!dx && !dy) continue;
-            const n = (y + dy) * w + (x + dx);
-            if (colorMask[n]) colorNeighbours++;
-            if (darkSupport[n]) darkNeighbours++;
-          }
-        }
-        if (colorNeighbours >= 1 && darkNeighbours >= 1) out[i] = 1;
-      }
-    }
   }
 
   private ensureTemporalBuffers(w: number, h: number): void {
@@ -400,7 +321,7 @@ export class Silhouette {
       const active = delta >= 28 || (dy >= 16 && (dcb >= 7 || dcr >= 7));
       if (active) {
         moving[i] = 1;
-        hold[i] = 45;
+        hold[i] = 8;
       } else if (hold[i] > 0) {
         hold[i] -= 1;
       }
