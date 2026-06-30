@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import {
   CameraStream,
   FrameGrabber,
@@ -87,7 +87,7 @@ export default function CubeScanner() {
 
     const det = tracker.update(detector.process(image));
     overlay.draw(ctx, det);
-    setNFaces(det.nFaces);
+    startTransition(() => setNFaces(det.nFaces));
   };
 
   const start = async () => {
@@ -203,7 +203,7 @@ export default function CubeScanner() {
 
       <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
         JS pur, sans OpenCV : masque de saturation → silhouette du cube → décomposition en 1, 2 ou 3
-        faces (rouge / vert / bleu). Le point jaune = coin où 3 faces se rejoignent.
+        faces. L&apos;overlay ne garde que le wireframe gris du cube reconstruit.
       </p>
     </div>
   );

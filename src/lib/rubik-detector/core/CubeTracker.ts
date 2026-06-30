@@ -11,7 +11,7 @@ const MAX_LOST = 6;    // frames the cube may vanish before we drop the lock
 // Thresholds (validated on real photos): high balance ⇒ 3 faces; otherwise a
 // strongly-supported internal edge ⇒ 2 faces; else a single flat face.
 const BALANCE_3 = 0.42;
-const SUP2_2 = 0.7;
+const SUP2_2 = 0.64;
 
 function median(xs: number[]): number {
   if (!xs.length) return 0;
@@ -72,7 +72,7 @@ export class CubeTracker {
       nFaces: n,
       center,
       confidence: Math.min(1, fillFrac / 0.16),
-      debug: { corners: f.corners, balance, sup2, fillFrac, smoothed: true },
+      debug: { corners: f.corners, balance, sup2, weak2: f.weak2, fillFrac, smoothed: true },
     };
     this.last = det;
     return det;

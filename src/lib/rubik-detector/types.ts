@@ -44,6 +44,7 @@ export type DetectionDebug = {
   corners: number;
   balance: number;
   sup2: number;
+  weak2: number;
   fillFrac: number;
   smoothed?: boolean;
 };
@@ -55,6 +56,7 @@ export type FrameResult = {
   corners: number;
   balance: number;
   sup2: number;
+  weak2: number;
   cand1: Face[];
   cand2: Face[] | null;
   cand3: { faces: Face[]; center: Point2 } | null;

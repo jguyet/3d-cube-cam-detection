@@ -15,12 +15,20 @@ import {
   dpClosed, topKCorners, minAreaRect,
 } from "../utils/geometry";
 
-export interface GradientMap { mag: Float32Array; w: number; h: number; mx: number; }
+export interface GradientMap {
+  mag: Float32Array;
+  gx: Float32Array;
+  gy: Float32Array;
+  w: number;
+  h: number;
+  mx: number;
+}
 
 export interface FrameAnalysis {
   corners: number;
   balance: number;
   sup2: number;
+  weak2: number;
   cand1: Face[];
   cand2: Face[] | null;
   cand3: { faces: Face[]; center: Point2 } | null;
@@ -32,6 +40,8 @@ export class FaceDecomposer {
     const g = new Float32Array(w * h);
     for (let i = 0, j = 0; i < d.length; i += 4, j++) g[j] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
     const mag = new Float32Array(w * h);
+    const gxMap = new Float32Array(w * h);
+    const gyMap = new Float32Array(w * h);
     let mx = 1;
     for (let y = 1; y < h - 1; y++)
       for (let x = 1; x < w - 1; x++) {
@@ -39,10 +49,12 @@ export class FaceDecomposer {
         const gx = (g[i - w + 1] + 2 * g[i + 1] + g[i + w + 1]) - (g[i - w - 1] + 2 * g[i - 1] + g[i + w - 1]);
         const gy = (g[i + w - 1] + 2 * g[i + w] + g[i + w + 1]) - (g[i - w - 1] + 2 * g[i - w] + g[i - w + 1]);
         const m = Math.hypot(gx, gy);
+        gxMap[i] = gx;
+        gyMap[i] = gy;
         mag[i] = m;
         if (m > mx) mx = m;
       }
-    return { mag, w, h, mx };
+    return { mag, gx: gxMap, gy: gyMap, w, h, mx };
   }
 
   analyze(hull: Point2[], grad: GradientMap): FrameAnalysis {
@@ -50,10 +62,17 @@ export class FaceDecomposer {
     const cand1: Face[] = [rect ? rect.corners : (hull.slice(0, 4) as Face)];
 
     const peri = hull.reduce((s, p, i) => s + dist(p, hull[(i + 1) % hull.length]), 0);
-    let P = dpClosed(hull, (0.045 * peri) / 2);
-    if (P.length > 6) P = topKCorners(P, 6);
+    const P = this.simplifyCorners(hull, peri);
     if (P.length < 6) {
-      return { corners: P.length, balance: 0, sup2: 0, cand1, cand2: null, cand3: null };
+      return {
+        corners: P.length,
+        balance: 0,
+        sup2: 0,
+        weak2: 0,
+        cand1,
+        cand2: null,
+        cand3: null,
+      };
     }
 
     const d3 = this.decompose3(P);
@@ -72,13 +91,15 @@ export class FaceDecomposer {
     q1.push(P[j]);
     for (let k = j; k !== i; k = (k + 1) % 6) q2.push(P[k]);
     q2.push(P[i]);
+    const strongCand2 = q1.length === 4 && q2.length === 4 ? [q1 as Face, q2 as Face] : null;
 
     return {
       corners: P.length,
       balance,
       sup2,
+      weak2: 0,
       cand1,
-      cand2: q1.length === 4 && q2.length === 4 ? [q1 as Face, q2 as Face] : null,
+      cand2: strongCand2,
       cand3: { faces: d3.faces, center: d3.center },
     };
   }
@@ -96,9 +117,26 @@ export class FaceDecomposer {
     return { faces, center: C };
   }
 
+  private simplifyCorners(hull: Point2[], peri: number): Point2[] {
+    const epsilons = [0.0225, 0.018, 0.014].map((k) => k * peri);
+    let best: Point2[] = [];
+
+    for (const eps of epsilons) {
+      let poly = dpClosed(hull, eps);
+      if (poly.length > 6) poly = topKCorners(poly, 6);
+      if (poly.length > best.length) best = poly;
+      if (poly.length >= 6) return poly;
+    }
+
+    return best;
+  }
+
   private edgeSupport(a: Point2, b: Point2, G: GradientMap, trim = 0.18): number {
     const N = 40;
-    let hit = 0, cnt = 0;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    let hit = 0, cnt = 0, sum = 0;
     for (let t = trim; t <= 1 - trim; t += (1 - 2 * trim) / N) {
       const x = Math.round(a.x + (b.x - a.x) * t), y = Math.round(a.y + (b.y - a.y) * t);
       let best = 0;
@@ -106,12 +144,16 @@ export class FaceDecomposer {
         for (let dx = -1; dx <= 1; dx++) {
           const xx = x + dx, yy = y + dy;
           if (xx < 1 || yy < 1 || xx >= G.w - 1 || yy >= G.h - 1) continue;
-          const v = G.mag[yy * G.w + xx];
+          const i = yy * G.w + xx;
+          const oriented = Math.abs(G.gx[i] * nx + G.gy[i] * ny) / G.mx;
+          const v = 0.75 * oriented + 0.25 * (G.mag[i] / G.mx);
           if (v > best) best = v;
         }
       cnt++;
-      if (best > G.mx * 0.2) hit++;
+      sum += Math.min(1, best / 0.42);
+      if (best > 0.18) hit++;
     }
-    return cnt ? hit / cnt : 0;
+    return cnt ? 0.55 * (hit / cnt) + 0.45 * (sum / cnt) : 0;
   }
+
 }

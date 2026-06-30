@@ -13,7 +13,7 @@ export class RubikFaceDetector {
   process(image: ImageData): FrameResult {
     const sil = this.silhouette.detect(image);
     if (!sil.hull) {
-      return { hull: null, fillFrac: 0, corners: 0, balance: 0, sup2: 0, cand1: [], cand2: null, cand3: null };
+      return { hull: null, fillFrac: 0, corners: 0, balance: 0, sup2: 0, weak2: 0, cand1: [], cand2: null, cand3: null };
     }
     const grad = this.decomposer.gradient(image);
     const a = this.decomposer.analyze(sil.hull, grad);
@@ -23,6 +23,7 @@ export class RubikFaceDetector {
       corners: a.corners,
       balance: a.balance,
       sup2: a.sup2,
+      weak2: a.weak2,
       cand1: a.cand1,
       cand2: a.cand2,
       cand3: a.cand3,
