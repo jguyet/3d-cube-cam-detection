@@ -38,6 +38,15 @@ export default function MLScanner() {
     busyRef.current = false;
     if (!res) return;
 
+    // Gate on the presence head: don't draw a cube when the net says there's none.
+    if (res.present < 0.5) {
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(8, 8, 168, 26);
+      ctx.fillStyle = "#fca5a5"; ctx.font = "14px system-ui";
+      ctx.fillText(`aucun cube (${(res.present * 100) | 0}%)`, 16, 26);
+      return;
+    }
+
     const W = grabber.width, H = grabber.height, c = res.corners;
     // edges between visible corners
     ctx.lineWidth = 2.5;

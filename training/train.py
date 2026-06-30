@@ -12,7 +12,8 @@ predicting, per image:
   - 8 corner positions (x,y in 0..1)         -> 16 sigmoids
   - 8 corner visibilities                    -> 8  sigmoids
   - 6 face visibilities                      -> 6  sigmoids
-Output tensor: [30] = [16 coords | 8 vis | 6 faces], all in 0..1.
+  - 1 presence ("is a cube in frame?")       -> 1  sigmoid
+Output tensor: [31] = [16 coords | 8 vis | 6 faces | 1 present], all in 0..1.
 
 Usage:
   pip install -r requirements.txt
@@ -73,7 +74,8 @@ class CubeDataset(Dataset):
             coords += [c["x"], c["y"]]
             vis.append(float(c["v"]))
         faces = [float(v) for v in it["faces"]]
-        y = torch.tensor(coords + vis + faces, dtype=torch.float32)  # [30]
+        present = float(it.get("present", 1))  # old datasets had no negatives
+        y = torch.tensor(coords + vis + faces + [present], dtype=torch.float32)  # [31]
         return x, y
 
 # ----------------------------- model -----------------------------
@@ -89,7 +91,7 @@ class CubeNet(nn.Module):
         feat = bb.classifier[0].in_features  # small=576, large=960
         self.head = nn.Sequential(
             nn.Linear(feat, 256), nn.Hardswish(), nn.Dropout(0.2),
-            nn.Linear(256, 2 * N_CORNERS + N_CORNERS + 6),  # 16 + 8 + 6 = 30
+            nn.Linear(256, 2 * N_CORNERS + N_CORNERS + 6 + 1),  # 16 + 8 + 6 + 1(present) = 31
         )
 
     def forward(self, x):
@@ -98,14 +100,20 @@ class CubeNet(nn.Module):
 
 # ----------------------------- loss -----------------------------
 def loss_fn(pred, tgt):
-    pc, pv, pf = pred[:, :16], pred[:, 16:24], pred[:, 24:]
-    tc, tv, tf = tgt[:, :16], tgt[:, 16:24], tgt[:, 24:]
-    # corner position: only penalise VISIBLE corners (mask), hidden lightly
-    vmask = tv.repeat_interleave(2, dim=1)  # [B,16]
-    w = vmask + 0.1 * (1 - vmask)
-    coord = (w * (pc - tc) ** 2).mean()
+    pc, pv, pf, pp = pred[:, :16], pred[:, 16:24], pred[:, 24:30], pred[:, 30:31]
+    tc, tv, tf, tp = tgt[:, :16], tgt[:, 16:24], tgt[:, 24:30], tgt[:, 30:31]
     bce = nn.functional.binary_cross_entropy
-    return 4.0 * coord + bce(pv, tv) + bce(pf, tf), coord.item()
+    # presence ("is there a cube?"): supervised on EVERY frame
+    pres = bce(pp, tp)
+    # pose/visibility/faces: supervised ONLY on frames that contain a cube (tp=1),
+    # so negative frames don't drag the corner regression toward the center.
+    denom = tp.sum().clamp(min=1.0)
+    vmask = tv.repeat_interleave(2, dim=1)            # [B,16]
+    w = (vmask + 0.1 * (1 - vmask)) * tp              # zero rows where no cube
+    coord = (w * (pc - tc) ** 2).sum() / w.sum().clamp(min=1.0)
+    vis = (tp * bce(pv, tv, reduction="none").mean(1, keepdim=True)).sum() / denom
+    fac = (tp * bce(pf, tf, reduction="none").mean(1, keepdim=True)).sum() / denom
+    return 4.0 * coord + vis + fac + pres, coord.item()
 
 # ----------------------------- train -----------------------------
 def main():

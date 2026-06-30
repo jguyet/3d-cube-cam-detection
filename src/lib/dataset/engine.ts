@@ -14,6 +14,7 @@ export interface Sample {
   corners: Corner[];   // 8
   faces: (0 | 1)[];    // 6 (order of CUBE_FACES)
   scheme: Scheme;
+  present: 0 | 1;      // 0 = negative frame (no cube)
 }
 
 let seed = 1234567;
@@ -50,6 +51,11 @@ export class DatasetEngine {
     // ---- cube + scheme ----
     if (this.cube) { this.rig.remove(this.cube); this.disposeGroup(this.cube); }
     this.rig.clear();
+
+    // ~18% NEGATIVE frames: a realistic background (sometimes a lone hand) and
+    // NO cube. Teaches the net "no cube here" so it stops firing on everything.
+    if (rng() < 0.18) return this.negativeSample();
+
     const scheme = SCHEMES[(rng() * SCHEMES.length) | 0];
     this.lastScheme = scheme;
     this.cube = buildCube(scheme, rng);
@@ -136,7 +142,34 @@ export class DatasetEngine {
       return (wn.dot(toCam) > 0.08 ? 1 : 0) as 0 | 1;
     });
 
-    return { corners, faces, scheme: this.lastScheme };
+    return { corners, faces, scheme: this.lastScheme, present: 1 };
+  }
+
+  // Background-only frame (no cube), sometimes with a lone floating hand so the
+  // net learns skin/hands aren't cubes. Labels: present=0, all corners hidden.
+  private negativeSample(): Sample {
+    this.cube = null;
+    if (rng() < 0.4) {
+      const h = buildHand(rng);
+      h.position.set((rng() - 0.5) * 1.5, (rng() - 0.5) * 1.2, 0);
+      h.scale.setScalar(0.6 + rng() * 0.8);
+      this.rig.add(h);
+    }
+    this.rig.quaternion.copy(new THREE.Quaternion().setFromEuler(
+      new THREE.Euler((rng() - 0.5) * 2, rng() * Math.PI * 2, (rng() - 0.5) * 2)));
+    this.lights.clear();
+    this.lights.add(new THREE.AmbientLight(0xffffff, 0.4 + rng() * 0.5));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.5 + rng() * 0.8);
+    dl.position.set((rng() - 0.5) * 6, (rng() - 0.5) * 6, 3 + rng() * 4);
+    this.lights.add(dl);
+    const item = (this.bgItems.length && rng() < 0.92) ? this.bgItems[(rng() * this.bgItems.length) | 0] : null;
+    this.scene.background = item ? item.tex : this.proceduralBg();
+    this.camera.position.set(0, 0, 3.5 + rng() * 2.5); this.camera.lookAt(0, 0, 0);
+    this.rig.position.set((rng() - 0.5) * 1.2, (rng() - 0.5) * 0.9, 0);
+    this.rig.scale.setScalar(0.8 + rng() * 0.6);
+    this.rig.updateMatrixWorld(true);
+    const corners: Corner[] = Array.from({ length: 8 }, () => ({ x: 0.5, y: 0.5, v: 0 as 0 }));
+    return { corners, faces: [0, 0, 0, 0, 0, 0], scheme: "black", present: 0 };
   }
 
   private proceduralBg(): THREE.CanvasTexture {

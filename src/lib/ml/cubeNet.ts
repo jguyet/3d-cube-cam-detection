@@ -1,5 +1,5 @@
 // Browser inference for the trained cube detector (ONNX). Mirrors training:
-// RGB 256×256, ImageNet-normalised → pred[30] = [16 coords | 8 vis | 6 faces].
+// RGB 256×256, ImageNet-normalised → pred[31] = [16 coords | 8 vis | 6 faces | 1 present].
 
 import * as ort from "onnxruntime-web";
 
@@ -13,6 +13,7 @@ export interface MLResult {
   corners: { x: number; y: number; v: number }[]; // 8, x/y in 0..1
   faces: number[];                                 // 6 probabilities
   edges: [number, number][];                       // 12 cube edges
+  present: number;                                 // 0..1 "a cube is in frame"
 }
 
 // cube edges: corner index i*4+j*2+k, edge = differ in exactly one bit
@@ -57,11 +58,12 @@ export class CubeNet {
     }
     const tensor = new ort.Tensor("float32", data, [1, 3, SIZE, SIZE]);
     const out = await this.session.run({ [this.inputName]: tensor });
-    const pred = out[this.outputName].data as Float32Array; // [30]
+    const pred = out[this.outputName].data as Float32Array; // [31]
 
     const corners = [];
     for (let i = 0; i < 8; i++) corners.push({ x: pred[i * 2], y: pred[i * 2 + 1], v: pred[16 + i] });
     const faces = Array.from(pred.slice(24, 30));
-    return { corners, faces, edges: EDGES };
+    const present = pred.length > 30 ? pred[30] : 1; // back-compat with 30-out models
+    return { corners, faces, edges: EDGES, present };
   }
 }
