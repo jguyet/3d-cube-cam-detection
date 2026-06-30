@@ -47,3 +47,6 @@ _*.ts
 
 /public/backgrounds/
 /public/models/*.onnx
+
+# generated datasets (large, regenerable headlessly)
+/dataset-*/
