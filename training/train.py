@@ -26,7 +26,10 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import torchvision.transforms as T
-from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+from torchvision.models import (
+    mobilenet_v3_small, MobileNet_V3_Small_Weights,
+    mobilenet_v3_large, MobileNet_V3_Large_Weights,
+)
 
 IMG = 256
 N_CORNERS = 8
@@ -75,12 +78,15 @@ class CubeDataset(Dataset):
 
 # ----------------------------- model -----------------------------
 class CubeNet(nn.Module):
-    def __init__(self):
+    def __init__(self, model="large"):
         super().__init__()
-        bb = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+        if model == "large":
+            bb = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
+        else:
+            bb = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
         self.features = bb.features
         self.pool = nn.AdaptiveAvgPool2d(1)
-        feat = bb.classifier[0].in_features  # 576
+        feat = bb.classifier[0].in_features  # small=576, large=960
         self.head = nn.Sequential(
             nn.Linear(feat, 256), nn.Hardswish(), nn.Dropout(0.2),
             nn.Linear(256, 2 * N_CORNERS + N_CORNERS + 6),  # 16 + 8 + 6 = 30
@@ -106,17 +112,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--val", type=float, default=0.1)
+    ap.add_argument("--model", choices=["small", "large"], default="large")
+    ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--export-only", action="store_true", help="load best.pt and export ONNX, no training")
     a = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-    print("device:", dev)
+    print("device:", dev, "| model:", a.model, "| batch:", a.batch)
 
     if a.export_only:
-        net = CubeNet().to(dev)
+        net = CubeNet(a.model).to(dev)
         net.load_state_dict(torch.load("best.pt", map_location=dev))
         export_onnx(net, dev)
         print("exported cube_detector.onnx from best.pt")
@@ -130,10 +138,12 @@ def main():
     va = torch.utils.data.Subset(CubeDataset(a.data, train=False), sorted(val_idx))
     print(f"train {len(tr)}  val {len(va)}")
 
-    tl = DataLoader(tr, a.batch, shuffle=True, num_workers=4, pin_memory=True)
-    vl = DataLoader(va, a.batch, shuffle=False, num_workers=2)
+    pin = dev == "cuda"
+    pw = a.workers > 0
+    tl = DataLoader(tr, a.batch, shuffle=True, num_workers=a.workers, pin_memory=pin, persistent_workers=pw)
+    vl = DataLoader(va, a.batch, shuffle=False, num_workers=max(2, a.workers // 2), persistent_workers=pw)
 
-    net = CubeNet().to(dev)
+    net = CubeNet(a.model).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
 
