@@ -31,6 +31,8 @@ import torchvision.transforms as T
 from torchvision.models import (
     mobilenet_v3_small, MobileNet_V3_Small_Weights,
     mobilenet_v3_large, MobileNet_V3_Large_Weights,
+    efficientnet_b1, EfficientNet_B1_Weights,
+    efficientnet_b3, EfficientNet_B3_Weights,
 )
 
 IMG_W, IMG_H = 320, 180   # model input (16:9, matches the 480×270 dataset ratio)
@@ -121,13 +123,20 @@ class CubeNet(nn.Module):
     to sim2real). Visibility/faces/presence stay global (they transfer fine)."""
     def __init__(self, model="large"):
         super().__init__()
-        if model == "large":
+        if model == "efficientnet_b3":
+            bb = efficientnet_b3(weights=EfficientNet_B3_Weights.DEFAULT)
+            feat = bb.classifier[1].in_features  # 1536
+        elif model == "efficientnet_b1":
+            bb = efficientnet_b1(weights=EfficientNet_B1_Weights.DEFAULT)
+            feat = bb.classifier[1].in_features  # 1280
+        elif model == "large":
             bb = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
+            feat = bb.classifier[0].in_features  # 960
         else:
             bb = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+            feat = bb.classifier[0].in_features  # 576
         self.features = bb.features
         self.pool = nn.AdaptiveAvgPool2d(1)
-        feat = bb.classifier[0].in_features  # small=576, large=960
         # spatial decoder → one heatmap per corner
         self.decoder = nn.Sequential(
             nn.Conv2d(feat, 128, 3, padding=1), nn.BatchNorm2d(128), nn.Hardswish(),
@@ -198,7 +207,7 @@ def main():
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--val", type=float, default=0.1)
-    ap.add_argument("--model", choices=["small", "large"], default="large")
+    ap.add_argument("--model", choices=["small", "large", "efficientnet_b1", "efficientnet_b3"], default="large")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--export-only", action="store_true", help="load best.pt and export ONNX, no training")
     a = ap.parse_args()
