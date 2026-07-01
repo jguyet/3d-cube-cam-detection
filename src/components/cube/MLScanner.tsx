@@ -19,6 +19,7 @@ export default function MLScanner() {
   const netRef = useRef<CubeNet | null>(null);
   const rafRef = useRef(0);
   const busyRef = useRef(false);
+  const histRef = useRef<MLResult[]>([]);   // recent frames for temporal smoothing
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -41,31 +42,44 @@ export default function MLScanner() {
     busyRef.current = false;
     if (!res) return;
 
-    // Gate on the presence head (stricter → fewer false "cube here" on clutter).
-    if (res.present < PRESENCE_MIN) {
+    // ---- temporal smoothing: median over the last N frames ----
+    // Kills jitter AND transient locks onto foreign objects: a corner that jumps
+    // to some clutter in a stray frame is outvoted by the frames where it's right.
+    const N = 6;
+    const hist = histRef.current;
+    hist.push(res);
+    if (hist.length > N) hist.shift();
+    const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+    const presence = median(hist.map((h) => h.present));
+    if (presence < PRESENCE_MIN) {
       ctx.fillStyle = "rgba(0,0,0,0.55)";
       ctx.fillRect(8, 8, 168, 26);
       ctx.fillStyle = "#fca5a5"; ctx.font = "14px system-ui";
-      ctx.fillText(`aucun cube (${(res.present * 100) | 0}%)`, 16, 26);
+      ctx.fillText(`aucun cube (${(presence * 100) | 0}%)`, 16, 26);
       return;
     }
 
-    const W = grabber.width, H = grabber.height, c = res.corners;
-    // Only draw corners the net is confident about. Uncertain corners soft-argmax
-    // to the image centre (flat heatmap) — drawing them creates the "corner stuck
-    // at centre" artefact, so we hide them and any edge touching them.
-    const vis = c.map((p) => p.v >= VIS_MIN);
+    const W = grabber.width, H = grabber.height;
+    // per-corner smoothed position, only from frames where that corner was confident
+    const need = Math.max(2, Math.ceil(hist.length / 2));
+    const sc = Array.from({ length: 8 }, (_, i) => {
+      const xs: number[] = [], ys: number[] = [];
+      for (const h of hist) { const p = h.corners[i]; if (p.v >= VIS_MIN) { xs.push(p.x); ys.push(p.y); } }
+      return xs.length >= need ? { x: median(xs), y: median(ys), on: true } : { x: 0, y: 0, on: false };
+    });
+
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = "rgba(255,90,230,0.95)";
     for (const [i, j] of res.edges) {
-      if (!vis[i] || !vis[j]) continue;
+      if (!sc[i].on || !sc[j].on) continue;
       ctx.beginPath();
-      ctx.moveTo(c[i].x * W, c[i].y * H);
-      ctx.lineTo(c[j].x * W, c[j].y * H);
+      ctx.moveTo(sc[i].x * W, sc[i].y * H);
+      ctx.lineTo(sc[j].x * W, sc[j].y * H);
       ctx.stroke();
     }
-    c.forEach((p, i) => {
-      if (!vis[i]) return;
+    sc.forEach((p) => {
+      if (!p.on) return;
       ctx.beginPath();
       ctx.arc(p.x * W, p.y * H, 4, 0, Math.PI * 2);
       ctx.fillStyle = "#00ff78";
@@ -91,7 +105,7 @@ export default function MLScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; setStatus("idle"); };
 
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
