@@ -44,6 +44,7 @@ export interface CubePose {
   edges: [number, number][]; // 12 cube edges as index pairs into corners
   faces: number;             // number of visible faces detected (1..3)
   confidence: number;        // 0..1
+  pose?: Pose3D;             // R,t,f of the dominant face → caller can quaternion-filter
 }
 
 type Mat = number[][];
@@ -629,6 +630,70 @@ function extractFacesV2(shapes: Shape[]): Face[] {
   return faces.slice(0, 3);
 }
 
+// ---- pose export for temporal (quaternion) filtering in the caller ----------
+export interface Pose3D { R: Mat; t: Vec; f: number }
+
+// Clean R,t,f from ONE face's homography (grid[0..3] -> image), so the caller can
+// SLERP-filter the pose across frames and reproject a rigid cube (no pixel swim).
+function poseFromFaceH(faceH: Mat, W: number, Himg: number): Pose3D | null {
+  const f = 1.3 * Math.max(W, Himg), cx = W / 2, cy = Himg / 2;
+  const Kinv: Mat = [[1 / f, 0, -cx / f], [0, 1 / f, -cy / f], [0, 0, 1]];
+  const Hn = matMul(Kinv, faceH);
+  const h1 = [Hn[0][0], Hn[1][0], Hn[2][0]], h2 = [Hn[0][1], Hn[1][1], Hn[2][1]], h3 = [Hn[0][2], Hn[1][2], Hn[2][2]];
+  const lam = 2 / (Math.hypot(h1[0], h1[1], h1[2]) + Math.hypot(h2[0], h2[1], h2[2]) + 1e-12);
+  let r1 = h1.map((v) => v * lam), r2 = h2.map((v) => v * lam);
+  let t = h3.map((v) => v * lam);
+  const d = r1[0] * r2[0] + r1[1] * r2[1] + r1[2] * r2[2];
+  r2 = [r2[0] - d * r1[0], r2[1] - d * r1[1], r2[2] - d * r1[2]];
+  const n1 = Math.hypot(r1[0], r1[1], r1[2]) || 1, n2 = Math.hypot(r2[0], r2[1], r2[2]) || 1;
+  r1 = r1.map((v) => v / n1); r2 = r2.map((v) => v / n2);
+  let r3 = [r1[1] * r2[2] - r1[2] * r2[1], r1[2] * r2[0] - r1[0] * r2[2], r1[0] * r2[1] - r1[1] * r2[0]];
+  if (t[2] < 0) t = t.map((v) => -v);
+  if (r3[2] < 0) r3 = r3.map((v) => -v);
+  if (!isFinite(t[2]) || t[2] < 1e-6) return null;
+  return { R: [[r1[0], r2[0], r3[0]], [r1[1], r2[1], r3[1]], [r1[2], r2[2], r3[2]]], t, f };
+}
+
+// project the ideal [0,3]^3 cube with a Pose3D → 8 image corners (same order as CubePose)
+export function projectPose(p: Pose3D, W: number, Himg: number): Point2[] {
+  const cx = W / 2, cy = Himg / 2, f = p.f, R = p.R, t = p.t;
+  return CUBE_CORNERS.map((X) => {
+    const zc = R[2][0] * X[0] + R[2][1] * X[1] + R[2][2] * X[2] + t[2] || 1e-9;
+    return {
+      x: (f * (R[0][0] * X[0] + R[0][1] * X[1] + R[0][2] * X[2] + t[0]) + cx * zc) / zc,
+      y: (f * (R[1][0] * X[0] + R[1][1] * X[1] + R[1][2] * X[2] + t[1]) + cy * zc) / zc,
+    };
+  });
+}
+
+export type Quat = [number, number, number, number];
+export function matToQuat(R: Mat): Quat {
+  const tr = R[0][0] + R[1][1] + R[2][2];
+  let w: number, x: number, y: number, z: number;
+  if (tr > 0) { const s = Math.sqrt(tr + 1) * 2; w = 0.25 * s; x = (R[2][1] - R[1][2]) / s; y = (R[0][2] - R[2][0]) / s; z = (R[1][0] - R[0][1]) / s; }
+  else if (R[0][0] > R[1][1] && R[0][0] > R[2][2]) { const s = Math.sqrt(1 + R[0][0] - R[1][1] - R[2][2]) * 2; w = (R[2][1] - R[1][2]) / s; x = 0.25 * s; y = (R[0][1] + R[1][0]) / s; z = (R[0][2] + R[2][0]) / s; }
+  else if (R[1][1] > R[2][2]) { const s = Math.sqrt(1 + R[1][1] - R[0][0] - R[2][2]) * 2; w = (R[0][2] - R[2][0]) / s; x = (R[0][1] + R[1][0]) / s; y = 0.25 * s; z = (R[1][2] + R[2][1]) / s; }
+  else { const s = Math.sqrt(1 + R[2][2] - R[0][0] - R[1][1]) * 2; w = (R[1][0] - R[0][1]) / s; x = (R[0][2] + R[2][0]) / s; y = (R[1][2] + R[2][1]) / s; z = 0.25 * s; }
+  const n = Math.hypot(w, x, y, z) || 1;
+  return [w / n, x / n, y / n, z / n];
+}
+export function quatToMat(q: Quat): Mat {
+  const [w, x, y, z] = q;
+  return [
+    [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+    [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+    [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+  ];
+}
+export function slerp(a: Quat, b: Quat, tt: number): Quat {
+  let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  let bb = b.slice() as Quat;
+  if (dot < 0) { bb = [-b[0], -b[1], -b[2], -b[3]]; dot = -dot; }
+  if (dot > 0.9995) { const r: Quat = [a[0] + (bb[0] - a[0]) * tt, a[1] + (bb[1] - a[1]) * tt, a[2] + (bb[2] - a[2]) * tt, a[3] + (bb[3] - a[3]) * tt]; const n = Math.hypot(...r) || 1; return [r[0] / n, r[1] / n, r[2] / n, r[3] / n]; }
+  const th0 = Math.acos(dot), th = th0 * tt, s0 = Math.cos(th) - dot * Math.sin(th) / Math.sin(th0), s1 = Math.sin(th) / Math.sin(th0);
+  return [s0 * a[0] + s1 * bb[0], s0 * a[1] + s1 * bb[1], s0 * a[2] + s1 * bb[2], s0 * a[3] + s1 * bb[3]];
+}
+
 // ---------------------------------------------------------------- main entry
 export function cubePoseFromStickers(shapes: Shape[], W: number, H: number): CubePose | null {
   try {
@@ -777,7 +842,7 @@ export function cubePoseFromStickers(shapes: Shape[], W: number, H: number): Cub
     conf *= 0.5 + 0.5 * coverage;
     conf *= 0.6 + 0.4 * consist;
     conf = Math.max(0.05, Math.min(1, conf));
-    return { corners, edges: CUBE_EDGES, faces: nfaces, confidence: conf };
+    return { corners, edges: CUBE_EDGES, faces: nfaces, confidence: conf, pose: poseFromFaceH(F[0].H, W, H) || undefined };
   } catch {
     return null;
   }
@@ -823,7 +888,7 @@ function singleFacePose(face: Face, W: number, H: number, nDetected: number): Cu
   }
   const coverage = Math.min(1, face.stickers.length / 9) * Math.min(1, face.stickers.length / Math.max(1, nDetected));
   const conf = Math.max(0.1, Math.min(0.4, 0.28 + 0.12 * coverage));
-  return { corners: [...ring0, ...ring1], edges: CUBE_EDGES, faces: 1, confidence: conf };
+  return { corners: [...ring0, ...ring1], edges: CUBE_EDGES, faces: 1, confidence: conf, pose: poseFromFaceH(face.H, W, H) || undefined };
 }
 
 // OPTIONAL: exposed for offline validation / debugging only (safe to delete).

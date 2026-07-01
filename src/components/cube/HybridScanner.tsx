@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
-import { cubePoseFromStickers } from "@/lib/ml/cubePoseFromStickers";
+import { cubePoseFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -22,7 +22,7 @@ export default function HybridScanner() {
   const grabberRef = useRef<FrameGrabber | null>(null);
   const netRef = useRef<CubeNet | null>(null);
   const shapeRef = useRef<ShapeDetector | null>(null);
-  const poseRef = useRef<Point2[] | null>(null);   // smoothed 8 cube corners
+  const poseRef = useRef<{ q: Quat; t: number[]; f: number } | null>(null);   // filtered 3D pose
   const rafRef = useRef(0);
   const busyRef = useRef(false);
   const histRef = useRef<MLResult[]>([]);
@@ -98,10 +98,34 @@ export default function HybridScanner() {
     }
 
     if (pose) {
-      // temporal smoothing on the 8 corners (index order is consistent per frame)
-      const prev = poseRef.current;
-      const c = pose.corners.map((p, i) => (prev && prev[i]) ? { x: prev[i].x + (p.x - prev[i].x) * 0.5, y: prev[i].y + (p.y - prev[i].y) * 0.5 } : p);
-      poseRef.current = c;
+      // POSE-SPACE (quaternion) temporal filter → rigid, no pixel "swimming".
+      // Only when the exposed pose actually reprojects the displayed cube (holds for
+      // the common close-up/single-face case); else keep the raw resection corners.
+      let c = pose.corners;
+      let poseOK = false;
+      if (pose.pose) {
+        const raw = projectPose(pose.pose, W, H);
+        const xs = pose.corners.map((p) => p.x), ys = pose.corners.map((p) => p.y);
+        const sz = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
+        let md = 0; for (let i = 0; i < 8; i++) md = Math.max(md, Math.hypot(raw[i].x - pose.corners[i].x, raw[i].y - pose.corners[i].y));
+        poseOK = md < 0.12 * sz;
+      }
+      if (pose.pose && poseOK) {
+        const q = matToQuat(pose.pose.R);
+        const prev = poseRef.current;
+        let fq = q, ft = pose.pose.t, ff = pose.pose.f;
+        if (prev) {
+          const dot = Math.abs(prev.q[0] * q[0] + prev.q[1] * q[1] + prev.q[2] * q[2] + prev.q[3] * q[3]);
+          const a = dot < 0.7 ? 1 : 0.4;   // big reorientation → snap; else smooth
+          fq = slerp(prev.q, q, a);
+          ft = pose.pose.t.map((v, i) => prev.t[i] + (v - prev.t[i]) * a);
+          ff = prev.f + (pose.pose.f - prev.f) * a;
+        }
+        poseRef.current = { q: fq, t: ft, f: ff };
+        c = projectPose({ R: quatToMat(fq), t: ft, f: ff }, W, H);
+      } else {
+        poseRef.current = null;
+      }
       // complete cube (cyan): verticals dimmer so the 3D reads
       for (const [i, j] of pose.edges) {
         const vertical = i + 4 === j;
