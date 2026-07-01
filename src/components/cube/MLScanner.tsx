@@ -69,8 +69,12 @@ export default function MLScanner() {
       return { x: median(xs), y: median(ys), w: median(ws) };
     });
 
-    // Robustly fit a real cube to all 8 (uncertain) corners → complete cube.
-    const fit = fitCube(sc);
+    // Only the VISIBLE corners (the model can actually see ≤7) drive the geometry;
+    // the hidden ones are EXCLUDED (weight 0) and reconstructed by the fit instead
+    // of trusting the model's guess. Need ≥6 visible for a non-degenerate 3D cube.
+    const visN = sc.filter((p) => p.w >= 0.4).length;
+    const fitInput = sc.map((p) => ({ x: p.x, y: p.y, w: p.w >= 0.4 ? p.w : 0 }));
+    const fit = visN >= 6 ? fitCube(fitInput) : null;
     if (fit) {
       const c = fit.corners;
       ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,224,255,0.95)";
