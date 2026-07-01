@@ -24,6 +24,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import torchvision.transforms as T
@@ -94,7 +95,30 @@ class CubeDataset(Dataset):
         return x, y
 
 # ----------------------------- model -----------------------------
+HM_H, HM_W = 24, 40   # corner-heatmap grid (16:9-ish)
+
+def soft_argmax(hm):
+    """[B,C,H,W] logits → per-channel (x,y) in 0..1 via spatial softmax + the prob maps."""
+    B, C, H, W = hm.shape
+    p = torch.softmax(hm.reshape(B, C, H * W), dim=2).reshape(B, C, H, W)
+    xs = torch.linspace(0, 1, W, device=hm.device).view(1, 1, W)
+    ys = torch.linspace(0, 1, H, device=hm.device).view(1, 1, H)
+    x = (p.sum(2) * xs).sum(2)   # [B,C]
+    y = (p.sum(3) * ys).sum(2)   # [B,C]
+    return torch.stack([x, y], dim=2), p
+
+def gaussian_target(coords, H, W, device, sigma=0.05):
+    """[B,C,2] in 0..1 → [B,C,H,W] gaussians (sum 1 per channel) centred on each corner."""
+    B, C, _ = coords.shape
+    xs = torch.linspace(0, 1, W, device=device).view(1, 1, 1, W)
+    ys = torch.linspace(0, 1, H, device=device).view(1, 1, H, 1)
+    cx = coords[..., 0].view(B, C, 1, 1); cy = coords[..., 1].view(B, C, 1, 1)
+    g = torch.exp(-(((xs - cx) ** 2 + (ys - cy) ** 2)) / (2 * sigma * sigma))
+    return g / (g.sum(dim=(2, 3), keepdim=True) + 1e-8)
+
 class CubeNet(nn.Module):
+    """Corners via a SPATIAL heatmap head (localise by local appearance → robust
+    to sim2real). Visibility/faces/presence stay global (they transfer fine)."""
     def __init__(self, model="large"):
         super().__init__()
         if model == "large":
@@ -104,31 +128,47 @@ class CubeNet(nn.Module):
         self.features = bb.features
         self.pool = nn.AdaptiveAvgPool2d(1)
         feat = bb.classifier[0].in_features  # small=576, large=960
-        self.head = nn.Sequential(
+        # spatial decoder → one heatmap per corner
+        self.decoder = nn.Sequential(
+            nn.Conv2d(feat, 128, 3, padding=1), nn.BatchNorm2d(128), nn.Hardswish(),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(128, 64, 3, padding=1), nn.BatchNorm2d(64), nn.Hardswish(),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(64, N_CORNERS, 1),
+        )
+        # global heads: 8 visibilities + 6 faces + 1 presence
+        self.ghead = nn.Sequential(
             nn.Linear(feat, 256), nn.Hardswish(), nn.Dropout(0.2),
-            nn.Linear(256, 2 * N_CORNERS + N_CORNERS + 6 + 1),  # 16 + 8 + 6 + 1(present) = 31
+            nn.Linear(256, N_CORNERS + 6 + 1),
         )
 
-    def forward(self, x):
-        f = self.pool(self.features(x)).flatten(1)
-        return torch.sigmoid(self.head(f))  # all outputs in 0..1
+    def forward(self, x, return_hm: bool = False):
+        f = self.features(x)
+        hm = F.interpolate(self.decoder(f), size=(HM_H, HM_W), mode="bilinear", align_corners=False)
+        coords, prob = soft_argmax(hm)                       # [B,8,2], [B,8,H,W]
+        go = torch.sigmoid(self.ghead(self.pool(f).flatten(1)))  # [B,15]
+        out = torch.cat([coords.reshape(x.shape[0], 16), go], dim=1)  # [B,31]
+        return (out, prob) if return_hm else out
 
 # ----------------------------- loss -----------------------------
-def loss_fn(pred, tgt):
+def loss_fn(pred, prob, tgt):
     pc, pv, pf, pp = pred[:, :16], pred[:, 16:24], pred[:, 24:30], pred[:, 30:31]
     tc, tv, tf, tp = tgt[:, :16], tgt[:, 16:24], tgt[:, 24:30], tgt[:, 30:31]
-    bce = nn.functional.binary_cross_entropy
-    # presence ("is there a cube?"): supervised on EVERY frame
-    pres = bce(pp, tp)
-    # pose/visibility/faces: supervised ONLY on frames that contain a cube (tp=1),
-    # so negative frames don't drag the corner regression toward the center.
+    bce = F.binary_cross_entropy
+    pres = bce(pp, tp)                                   # presence on every frame
     denom = tp.sum().clamp(min=1.0)
-    vmask = tv.repeat_interleave(2, dim=1)            # [B,16]
-    w = (vmask + 0.1 * (1 - vmask)) * tp              # zero rows where no cube
-    coord = (w * (pc - tc) ** 2).sum() / w.sum().clamp(min=1.0)
+    vmask = tv.repeat_interleave(2, dim=1)
+    w = (vmask + 0.1 * (1 - vmask)) * tp
+    coord = (w * (pc - tc) ** 2).sum() / w.sum().clamp(min=1.0)         # soft-argmax coords
     vis = (tp * bce(pv, tv, reduction="none").mean(1, keepdim=True)).sum() / denom
     fac = (tp * bce(pf, tf, reduction="none").mean(1, keepdim=True)).sum() / denom
-    return 4.0 * coord + vis + fac + pres, coord.item()
+    # heatmap cross-entropy: each visible corner's prob map must peak at the GT corner
+    gc = tc.reshape(tgt.shape[0], N_CORNERS, 2)
+    tgt_hm = gaussian_target(gc, HM_H, HM_W, prob.device)
+    hmw = tv * tp                                        # [B,8] visible & present
+    ce = -(tgt_hm * torch.log(prob + 1e-8)).sum(dim=(2, 3))            # [B,8]
+    hml = (ce * hmw).sum() / hmw.sum().clamp(min=1.0)
+    return 4.0 * coord + 3.0 * hml + vis + fac + pres, coord.item()
 
 # ----------------------------- train -----------------------------
 def main():
@@ -176,7 +216,8 @@ def main():
         for x, y in tl:
             x, y = x.to(dev), y.to(dev)
             opt.zero_grad()
-            loss, _ = loss_fn(net(x), y)
+            out, prob = net(x, return_hm=True)
+            loss, _ = loss_fn(out, prob, y)
             loss.backward(); opt.step()
             tot += loss.item() * len(x)
         sch.step()
@@ -185,7 +226,8 @@ def main():
         with torch.no_grad():
             for x, y in vl:
                 x, y = x.to(dev), y.to(dev)
-                loss, c = loss_fn(net(x), y)
+                out, prob = net(x, return_hm=True)
+                loss, c = loss_fn(out, prob, y)
                 vtot += loss.item() * len(x); vcoord += c * len(x)
         vtot /= len(va); vcoord /= len(va)
         print(f"ep {ep+1:02d}/{a.epochs}  train {tot/len(tr):.4f}  val {vtot:.4f}  coordMSE {vcoord:.5f}")
