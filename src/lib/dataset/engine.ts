@@ -6,6 +6,8 @@
 
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { buildCube, CUBE_CORNERS, CUBE_FACES, type Scheme } from "./cubeModel";
 import { buildHand } from "./handModel";
 
@@ -35,10 +37,14 @@ export class DatasetEngine {
   private camera: THREE.PerspectiveCamera;
   private rig = new THREE.Group();      // holds cube + hands; gets the random pose
   private cube: THREE.Group | null = null;
+  private person = new THREE.Group();   // t-shirt torso behind the cube (realism)
   private lights = new THREE.Group();
   private ray = new THREE.Raycaster();
   private bgItems: BgItem[] = [];
   private lastScheme: Scheme = "black";
+  private shirts: THREE.Object3D[] = [];
+  private fabric: { albedo: THREE.Texture; normal: THREE.Texture; rough: THREE.Texture } | null = null;
+  private mockupReady = false;
 
   // 16:9 landscape to match a real webcam (no square-stretch of the cube).
   constructor(canvas: HTMLCanvasElement, width = 480, height = 270) {
@@ -51,6 +57,7 @@ export class DatasetEngine {
     this.renderer.setPixelRatio(1);
     this.camera = new THREE.PerspectiveCamera(this.fov, this.aspect, 0.1, 100);
     this.scene.add(this.rig);
+    this.scene.add(this.person);
     this.scene.add(this.lights);
     // Image-based lighting → realistic glossy plastic reflections on the stickers
     // (the biggest sim2real cue for a real Rubik's cube).
@@ -60,8 +67,49 @@ export class DatasetEngine {
 
   setBackgrounds(items: BgItem[]) { this.bgItems = items; }
 
+  // Load the t-shirt torso GLB(s) + fabric textures + (optionally) a studio HDR,
+  // so positives can render a realistic clothed torso behind the cube — matching
+  // the real "person holding a cube" scenario. Call before generating.
+  async loadMockup(shirtUrls: string[], hdrUrl?: string) {
+    const tl = new THREE.TextureLoader();
+    const [albedo, normal, rough] = await Promise.all([
+      tl.loadAsync("/mockup/models/tshirt_albedo.png"),
+      tl.loadAsync("/mockup/models/tshirt_normal.png"),
+      tl.loadAsync("/mockup/models/tshirt_roughness.png"),
+    ]);
+    albedo.colorSpace = THREE.SRGBColorSpace;
+    for (const t of [albedo, normal, rough]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; }
+    this.fabric = { albedo, normal, rough };
+    if (hdrUrl) {
+      try {
+        const hdr = await new RGBELoader().loadAsync(hdrUrl);
+        hdr.mapping = THREE.EquirectangularReflectionMapping;
+        const pmrem = new THREE.PMREMGenerator(this.renderer);
+        this.scene.environment = pmrem.fromEquirectangular(hdr).texture;
+      } catch { /* keep RoomEnvironment */ }
+    }
+    const gl = new GLTFLoader();
+    for (const u of shirtUrls) {
+      try {
+        const g = await gl.loadAsync(u);
+        const box = new THREE.Box3().setFromObject(g.scene);
+        const size = new THREE.Vector3(); box.getSize(size);
+        const center = new THREE.Vector3(); box.getCenter(center);
+        // normalise: recentre and scale so the garment is ~1 unit tall
+        const wrap = new THREE.Group();
+        g.scene.position.sub(center);
+        g.scene.scale.multiplyScalar(1 / (size.y || 1));
+        wrap.add(g.scene);
+        this.shirts.push(wrap);
+      } catch { /* skip */ }
+    }
+    this.mockupReady = this.shirts.length > 0;
+    return this.mockupReady;
+  }
+
   randomize(): Sample {
     this.disposeGroup(this.rig); this.rig.clear(); this.cube = null;
+    this.person.clear();   // clones share the template's geometry → don't dispose
 
     // ~15% synthetic NEGATIVE frames (real Kaggle no-cube crops are added to the
     // dataset separately and do the heavy lifting; keep synth negatives modest so
@@ -152,6 +200,27 @@ export class DatasetEngine {
     }
     // NDC → world at z=0 (x scaled by aspect for the 16:9 frame)
     this.rig.position.set(nx * D * t * this.aspect, ny * D * t, 0);
+
+    // ~65%: a realistic t-shirt TORSO behind the cube (matches "person holding a
+    // cube in a room" — the biggest remaining sim2real gap vs crude procedural hands)
+    if (this.mockupReady && rng() < 0.65) this.addShirt(nx, ny, D, t, s);
+  }
+
+  private addShirt(nx: number, ny: number, D: number, t: number, s: number) {
+    const shirt = this.shirts[(rng() * this.shirts.length) | 0].clone(true);
+    const col = new THREE.Color().setHSL(rng(), 0.3 + rng() * 0.55, 0.25 + rng() * 0.55);
+    const mat = new THREE.MeshStandardMaterial({
+      color: col, map: this.fabric!.albedo, normalMap: this.fabric!.normal,
+      roughnessMap: this.fabric!.rough, roughness: 0.9, metalness: 0.0, envMapIntensity: 0.8,
+    });
+    shirt.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.material = mat; });
+    const sc = (2.9 + rng() * 1.8) * s;                       // torso ~3-4.5× the cube (fills bg)
+    shirt.scale.setScalar(sc);
+    shirt.position.set(nx * D * t * this.aspect + (rng() - 0.5) * 0.3 * s,
+      ny * D * t - (0.2 + rng() * 0.4) * s, -(0.5 + rng() * 0.7) * s);    // just behind, slightly lower
+    shirt.rotation.set((rng() - 0.5) * 0.22, (rng() - 0.5) * 0.4, (rng() - 0.5) * 0.15); // mostly front-facing
+    this.person.add(shirt);
+    this.person.updateMatrixWorld(true);
   }
 
   render() { this.renderer.render(this.scene, this.camera); }

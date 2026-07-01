@@ -58,3 +58,6 @@ _*.ts
 /best.pt
 /cube_detector.onnx
 /cube_detector.onnx.data
+
+# 3D t-shirt mockup assets (copied from linepicplus/3d-mockups)
+/public/mockup/

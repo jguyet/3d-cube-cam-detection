@@ -71,9 +71,17 @@ export default function HeadlessGen() {
           if (i % 50 === 0) setMsg(`loading backgrounds ${i}/${files.length}`);
         }
         if (items.length) engine.setBackgrounds(items);
+        setMsg(`loading t-shirt mockup…`);
+        let mockup = false;
+        try {
+          mockup = await engine.loadMockup(
+            ["/mockup/models/men-tishirt.glb"],   // lightest garment (speed)
+            "/mockup/hdr/blocky_photo_studio_1k.hdr",
+          );
+        } catch { /* mockup optional */ }
         W.__cube.bgCount = items.length;
         W.__cube.ready = true;
-        setMsg(`ready — ${items.length} backgrounds`);
+        setMsg(`ready — ${items.length} backgrounds, mockup ${mockup ? "on" : "off"}`);
       } catch (e) {
         W.__cube.error = e instanceof Error ? e.message : String(e);
         W.__cube.ready = true; // unblock driver; it can decide
