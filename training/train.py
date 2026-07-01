@@ -95,7 +95,7 @@ class CubeDataset(Dataset):
         return x, y
 
 # ----------------------------- model -----------------------------
-HM_H, HM_W = 24, 40   # corner-heatmap grid (16:9-ish)
+HM_H, HM_W = 48, 80   # corner-heatmap grid (16:9-ish) — finer = more precise corners
 
 def soft_argmax(hm):
     """[B,C,H,W] logits → per-channel (x,y) in 0..1 via spatial softmax + the prob maps."""
@@ -131,10 +131,12 @@ class CubeNet(nn.Module):
         # spatial decoder → one heatmap per corner
         self.decoder = nn.Sequential(
             nn.Conv2d(feat, 128, 3, padding=1), nn.BatchNorm2d(128), nn.Hardswish(),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),   # →12×20
             nn.Conv2d(128, 64, 3, padding=1), nn.BatchNorm2d(64), nn.Hardswish(),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
-            nn.Conv2d(64, N_CORNERS, 1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),   # →24×40
+            nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.Hardswish(),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),   # →48×80
+            nn.Conv2d(32, N_CORNERS, 1),
         )
         # global heads: 8 visibilities + 6 faces + 1 presence
         self.ghead = nn.Sequential(
