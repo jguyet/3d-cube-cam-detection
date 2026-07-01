@@ -1,0 +1,13 @@
+import * as fs from "fs";
+import { cubePoseFromStickers } from "./src/lib/ml/cubePoseFromStickers";
+const SCR = "/private/tmp/claude-501/-Users-jeremyguyet-project-rubix-learn/c827224c-1d4f-4039-99d0-bde3b1caa87e/scratchpad";
+const data = JSON.parse(fs.readFileSync(SCR + "/real_shapes.json", "utf8"));
+const W = 360, H = 480;
+for (const [name, shapes] of Object.entries(data) as [string, any[]][]) {
+  const inp = shapes.map((s) => ({ corners: s.corners, center: s.center, area: s.area, fill: 1 }));
+  const pose = cubePoseFromStickers(inp as any, W, H);
+  if (!pose) { console.log(`${name}: ${shapes.length} stickers → NULL (no cube)`); continue; }
+  const xs = pose.corners.map((c: any) => c.x), ys = pose.corners.map((c: any) => c.y);
+  const spanx = (Math.max(...xs) - Math.min(...xs)).toFixed(0), spany = (Math.max(...ys) - Math.min(...ys)).toFixed(0);
+  console.log(`${name}: ${shapes.length} stickers → faces=${pose.faces} conf=${pose.confidence.toFixed(2)} cubeSpan=${spanx}x${spany}px`);
+}

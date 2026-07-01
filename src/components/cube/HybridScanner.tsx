@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
-import { convexHull } from "@/lib/rubik-detector/utils/geometry";
+import { cubePoseFromStickers } from "@/lib/ml/cubePoseFromStickers";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -22,7 +22,7 @@ export default function HybridScanner() {
   const grabberRef = useRef<FrameGrabber | null>(null);
   const netRef = useRef<CubeNet | null>(null);
   const shapeRef = useRef<ShapeDetector | null>(null);
-  const hullRef = useRef<Point2[] | null>(null);   // smoothed silhouette
+  const poseRef = useRef<Point2[] | null>(null);   // smoothed 8 cube corners
   const rafRef = useRef(0);
   const busyRef = useRef(false);
   const histRef = useRef<MLResult[]>([]);
@@ -85,44 +85,40 @@ export default function HybridScanner() {
       ctx.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0); ctx.setLineDash([]);
     }
 
-    // ---- CLASSICAL sticker detection INSIDE the ML zone ----
+    // ---- CLASSICAL sticker detection INSIDE the ML zone → geometric cube pose ----
     const shapes = shapeRef.current!.detect(image, 150, region);
-    if (shapes.length >= 3) {   // ≥3 sticker quads → a real cube (a face has none)
-      // precise cube silhouette = convex hull of ALL detected sticker corners
-      const raw = convexHull(shapes.flatMap((s) => s.corners));
-      // temporal smoothing: match to the previous hull by nearest vertex, lerp
-      let hull = raw;
-      const prev = hullRef.current;
-      if (prev && prev.length && raw.length) {
-        hull = raw.map((p) => {
-          let best = prev[0], bd = Infinity;
-          for (const q of prev) { const dd = (p.x - q.x) ** 2 + (p.y - q.y) ** 2; if (dd < bd) { bd = dd; best = q; } }
-          return bd < 900 ? { x: best.x + (p.x - best.x) * 0.4, y: best.y + (p.y - best.y) * 0.4 } : p;
-        });
-      }
-      hullRef.current = hull;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pose = shapes.length >= 3 ? cubePoseFromStickers(shapes as any, W, H) : null;
 
-      // detected stickers (faint)
-      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255,255,255,0.35)";
-      for (const s of shapes) {
-        ctx.beginPath(); s.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-        ctx.closePath(); ctx.stroke();
-      }
-      // precise outline (orange)
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,140,0,0.95)";
-      ctx.beginPath(); hull.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    // detected stickers (faint)
+    ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    for (const s of shapes) {
+      ctx.beginPath(); s.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       ctx.closePath(); ctx.stroke();
-      ctx.fillStyle = "#ff8c00";
-      for (const p of hull) { ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); }
-      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 230, 24);
-      ctx.fillStyle = "#ffd08a"; ctx.font = "13px system-ui";
-      ctx.fillText(`cube: ${shapes.length} stickers, contour ${hull.length} sommets`, 14, 25);
+    }
+
+    if (pose) {
+      // temporal smoothing on the 8 corners (index order is consistent per frame)
+      const prev = poseRef.current;
+      const c = pose.corners.map((p, i) => (prev && prev[i]) ? { x: prev[i].x + (p.x - prev[i].x) * 0.5, y: prev[i].y + (p.y - prev[i].y) * 0.5 } : p);
+      poseRef.current = c;
+      // complete cube (cyan): verticals dimmer so the 3D reads
+      for (const [i, j] of pose.edges) {
+        const vertical = i + 4 === j;
+        ctx.lineWidth = vertical ? 2 : 3;
+        ctx.strokeStyle = vertical ? "rgba(0,224,255,0.6)" : "rgba(0,224,255,0.95)";
+        ctx.beginPath(); ctx.moveTo(c[i].x, c[i].y); ctx.lineTo(c[j].x, c[j].y); ctx.stroke();
+      }
+      ctx.fillStyle = "#00e0ff";
+      for (const p of c) { ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
+      ctx.fillStyle = "#a8f0ff"; ctx.font = "13px system-ui";
+      ctx.fillText(`cube 3D — ${pose.faces} face(s), ${shapes.length} stickers, conf ${pose.confidence.toFixed(2)}`, 14, 25);
     } else {
-      hullRef.current = null;
-      // ML sees a "cube-ish" zone but NO sticker grid → not a real cube (e.g. a face)
+      poseRef.current = null;
       ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
       ctx.fillStyle = "#fca5a5"; ctx.font = "13px system-ui";
-      ctx.fillText(`zone ML — cube non confirmé (${shapes.length} stickers)`, 14, 25);
+      ctx.fillText(`zone ML — pas de cube confirmé (${shapes.length} stickers)`, 14, 25);
     }
   };
 
@@ -145,7 +141,7 @@ export default function HybridScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; hullRef.current = null; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; setStatus("idle"); };
 
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
