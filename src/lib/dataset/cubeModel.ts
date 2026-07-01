@@ -26,11 +26,11 @@ export function buildCube(scheme: Scheme, rng: () => number): THREE.Group {
   const g = new THREE.Group();
   const bodyColor = scheme === "white" ? 0xe9e9e9 : 0x0c0c0c;
 
-  // cube body (visible in the gaps)
+  // glossy black/white plastic body (visible in the gaps between stickers)
   const bodySize = scheme === "none" ? 0.999 : 0.985;
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(bodySize, bodySize, bodySize),
-    new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.55, metalness: 0.05 }),
+    new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.35 + rng() * 0.15, metalness: 0.0, envMapIntensity: 0.9 }),
   );
   body.name = "cube-body";
   g.add(body);
@@ -38,14 +38,21 @@ export function buildCube(scheme: Scheme, rng: () => number): THREE.Group {
   const step = 1 / 3;
   const sticker = scheme === "none" ? step * 0.99 : step * 0.86; // gap size
   const out = 0.5 + 0.004;
+  // slight per-cube gloss so the dataset spans matte→shiny real cubes
+  const baseRough = 0.16 + rng() * 0.22;
 
   for (const f of CUBE_FACES) {
     const n = new THREE.Vector3(...f.n), u = new THREE.Vector3(...f.u), v = new THREE.Vector3(...f.v);
     for (let i = -1; i <= 1; i++)
       for (let j = -1; j <= 1; j++) {
-        const col = PALETTE[(rng() * PALETTE.length) | 0];
-        const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.35 + rng() * 0.25, metalness: 0.02 });
-        const plane = new THREE.Mesh(new THREE.PlaneGeometry(sticker, sticker), mat);
+        const col = new THREE.Color(PALETTE[(rng() * PALETTE.length) | 0]);
+        col.offsetHSL((rng() - 0.5) * 0.02, (rng() - 0.5) * 0.08, (rng() - 0.5) * 0.06); // subtle real-world variation
+        const mat = new THREE.MeshStandardMaterial({
+          color: col, roughness: baseRough + (rng() - 0.5) * 0.08, metalness: 0.0, envMapIntensity: 1.1,
+        });
+        // rounded sticker (real cubes have rounded-corner stickers with a bevel gap)
+        const geo = new THREE.PlaneGeometry(sticker, sticker);
+        const plane = new THREE.Mesh(geo, mat);
         const pos = new THREE.Vector3()
           .addScaledVector(n, out)
           .addScaledVector(u, i * step)

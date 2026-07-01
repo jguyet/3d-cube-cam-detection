@@ -5,6 +5,7 @@
 // Domain randomisation -> a small net can learn cube pose + faces from this.
 
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { buildCube, CUBE_CORNERS, CUBE_FACES, type Scheme } from "./cubeModel";
 import { buildHand } from "./handModel";
 
@@ -51,6 +52,10 @@ export class DatasetEngine {
     this.camera = new THREE.PerspectiveCamera(this.fov, this.aspect, 0.1, 100);
     this.scene.add(this.rig);
     this.scene.add(this.lights);
+    // Image-based lighting → realistic glossy plastic reflections on the stickers
+    // (the biggest sim2real cue for a real Rubik's cube).
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   }
 
   setBackgrounds(items: BgItem[]) { this.bgItems = items; }
@@ -58,9 +63,10 @@ export class DatasetEngine {
   randomize(): Sample {
     this.disposeGroup(this.rig); this.rig.clear(); this.cube = null;
 
-    // ~30% NEGATIVE frames: a realistic background with clutter/hands/distractors
-    // but NO cube. Teaches the net to NOT fire on busy real scenes.
-    if (rng() < 0.30) return this.negativeSample();
+    // ~15% synthetic NEGATIVE frames (real Kaggle no-cube crops are added to the
+    // dataset separately and do the heavy lifting; keep synth negatives modest so
+    // presence recall on real cubes isn't over-suppressed).
+    if (rng() < 0.15) return this.negativeSample();
 
     // Build a positive; retry if the cube ends up mostly hidden by a hand. Later
     // attempts drop the hands, so an over-occluding hand can't produce a bad label.
