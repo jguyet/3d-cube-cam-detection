@@ -13,9 +13,11 @@ import { buildHand } from "./handModel";
 
 export interface BgItem { tex: THREE.Texture; bbox?: { cx: number; cy: number; w: number; h: number } }
 export interface Corner { x: number; y: number; v: 0 | 1 }
+export interface Sticker { x: number; y: number; face: number; gi: number; gj: number; v: 0 | 1 }
 export interface Sample {
   corners: Corner[];   // 8
   faces: (0 | 1)[];    // 6 (order of CUBE_FACES)
+  stickers: Sticker[]; // 54 sticker centres (x,y,face,grid i/j,visible) — Axis-1 grid model
   scheme: Scheme;
   present: 0 | 1;      // 0 = negative frame (no cube)
 }
@@ -257,7 +259,33 @@ export class DatasetEngine {
       return (wn.dot(toCam) > 0.08 ? 1 : 0) as 0 | 1;
     });
 
-    return { corners, faces, scheme: this.lastScheme, present: 1 };
+    // sticker centres (Axis-1): projected 2D + face + grid index + visibility.
+    // Occlusion by hands/distractors only (the cube's own faces are handled by facing).
+    const handOcc: THREE.Object3D[] = [];
+    this.cube!.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh && m.name !== "sticker" && m.name !== "cube-body") handOcc.push(o); });
+    const wc = new THREE.Vector3();
+    const stickers: Sticker[] = [];
+    this.cube!.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.name !== "sticker") return;
+      const ud = m.userData as { face: number; gi: number; gj: number };
+      m.getWorldPosition(wc);
+      const ndc = wc.clone().project(cam);
+      const x = ndc.x * 0.5 + 0.5, y = -ndc.y * 0.5 + 0.5;
+      const onscreen = x >= 0 && x <= 1 && y >= 0 && y <= 1 && ndc.z < 1;
+      const fn = CUBE_FACES[ud.face].n;
+      const wn = new THREE.Vector3(fn[0], fn[1], fn[2]).transformDirection(cm).normalize();
+      const facing = wn.dot(cam.position.clone().sub(wc).normalize()) > 0.08;
+      let occluded = false;
+      if (onscreen && facing && handOcc.length) {
+        this.ray.set(cam.position, wc.clone().sub(cam.position).normalize());
+        const hits = this.ray.intersectObjects(handOcc, false);
+        occluded = hits.length > 0 && hits[0].distance < wc.distanceTo(cam.position) - 0.02;
+      }
+      stickers.push({ x: +x.toFixed(4), y: +y.toFixed(4), face: ud.face, gi: ud.gi, gj: ud.gj, v: (onscreen && facing && !occluded ? 1 : 0) as 0 | 1 });
+    });
+
+    return { corners, faces, stickers, scheme: this.lastScheme, present: 1 };
   }
 
   // Background-only frame (no cube). Populated with a lone hand and/or HARD
@@ -296,7 +324,7 @@ export class DatasetEngine {
     this.scene.background = item ? item.tex : this.proceduralBg();
     this.rig.updateMatrixWorld(true);
     const corners: Corner[] = Array.from({ length: 8 }, () => ({ x: 0.5, y: 0.5, v: 0 as 0 }));
-    return { corners, faces: [0, 0, 0, 0, 0, 0], scheme: "black", present: 0 };
+    return { corners, faces: [0, 0, 0, 0, 0, 0], stickers: [], scheme: "black", present: 0 };
   }
 
   private proceduralBg(): THREE.CanvasTexture {

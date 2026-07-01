@@ -41,7 +41,7 @@ export function buildCube(scheme: Scheme, rng: () => number): THREE.Group {
   // slight per-cube gloss so the dataset spans matte→shiny real cubes
   const baseRough = 0.16 + rng() * 0.22;
 
-  for (const f of CUBE_FACES) {
+  CUBE_FACES.forEach((f, fi) => {
     const n = new THREE.Vector3(...f.n), u = new THREE.Vector3(...f.u), v = new THREE.Vector3(...f.v);
     for (let i = -1; i <= 1; i++)
       for (let j = -1; j <= 1; j++) {
@@ -60,8 +60,9 @@ export function buildCube(scheme: Scheme, rng: () => number): THREE.Group {
         plane.position.copy(pos);
         plane.lookAt(pos.clone().add(n));
         plane.name = "sticker";
+        plane.userData = { face: fi, gi: i, gj: j };   // for sticker-centre labels
         g.add(plane);
       }
-  }
+  });
   return g;
 }
