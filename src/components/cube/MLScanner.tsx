@@ -62,37 +62,32 @@ export default function MLScanner() {
     }
 
     const W = grabber.width, H = grabber.height;
-    // per-corner smoothed position, only from frames where that corner was confident
-    const need = Math.max(2, Math.ceil(hist.length / 2));
+    // smoothed position + confidence for ALL 8 corners (median over recent frames)
     const sc = Array.from({ length: 8 }, (_, i) => {
-      const xs: number[] = [], ys: number[] = [];
-      for (const h of hist) { const p = h.corners[i]; if (p.v >= VIS_MIN) { xs.push(p.x); ys.push(p.y); } }
-      return xs.length >= need ? { x: median(xs), y: median(ys), on: true } : { x: 0, y: 0, on: false };
+      const xs: number[] = [], ys: number[] = [], ws: number[] = [];
+      for (const h of hist) { const p = h.corners[i]; xs.push(p.x); ys.push(p.y); ws.push(p.v); }
+      return { x: median(xs), y: median(ys), w: median(ws) };
     });
 
-    // Fit a real cube to the (noisy/incomplete) corners → reproject all 8 for a
-    // COMPLETE, geometrically-valid overlay. Falls back to raw corners if no fit.
+    // Robustly fit a real cube to all 8 (uncertain) corners → complete cube.
     const fit = fitCube(sc);
-    const draw = fit
-      ? fit.corners.map((p) => ({ x: p.x, y: p.y, on: true }))
-      : sc;
-
-    ctx.lineWidth = fit ? 3 : 2.5;
-    ctx.strokeStyle = fit ? "rgba(0,224,255,0.95)" : "rgba(255,90,230,0.95)";
-    for (const [i, j] of res.edges) {
-      if (!draw[i].on || !draw[j].on) continue;
-      ctx.beginPath();
-      ctx.moveTo(draw[i].x * W, draw[i].y * H);
-      ctx.lineTo(draw[j].x * W, draw[j].y * H);
-      ctx.stroke();
+    if (fit) {
+      const c = fit.corners;
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,224,255,0.95)";
+      for (const [i, j] of res.edges) {
+        ctx.beginPath(); ctx.moveTo(c[i].x * W, c[i].y * H); ctx.lineTo(c[j].x * W, c[j].y * H); ctx.stroke();
+      }
+      c.forEach((p) => { ctx.beginPath(); ctx.arc(p.x * W, p.y * H, 4, 0, Math.PI * 2); ctx.fillStyle = "#00e0ff"; ctx.fill(); });
+    } else {
+      // fallback: raw confident corners only
+      ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(255,90,230,0.95)";
+      const on = sc.map((p) => p.w >= VIS_MIN);
+      for (const [i, j] of res.edges) {
+        if (!on[i] || !on[j]) continue;
+        ctx.beginPath(); ctx.moveTo(sc[i].x * W, sc[i].y * H); ctx.lineTo(sc[j].x * W, sc[j].y * H); ctx.stroke();
+      }
+      sc.forEach((p, i) => { if (!on[i]) return; ctx.beginPath(); ctx.arc(p.x * W, p.y * H, 4, 0, Math.PI * 2); ctx.fillStyle = "#00ff78"; ctx.fill(); });
     }
-    draw.forEach((p) => {
-      if (!p.on) return;
-      ctx.beginPath();
-      ctx.arc(p.x * W, p.y * H, 4, 0, Math.PI * 2);
-      ctx.fillStyle = fit ? "#00e0ff" : "#00ff78";
-      ctx.fill();
-    });
   };
 
   const start = async () => {

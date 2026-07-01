@@ -1,13 +1,12 @@
-// Fit a cube to the (noisy, possibly incomplete) 2D corner predictions and
-// reproject ALL 8 corners, so the overlay is a COMPLETE, geometrically-consistent
-// cube — even when some corners are hidden or a bit off. Weak-perspective (affine
-// 2x4) least-squares fit: [x,y] = M · [X,Y,Z,1], solved from the confident corners.
+// Fit a cube to ALL 8 (noisy, uncertain) 2D corner predictions and reproject them
+// into a COMPLETE, consistent cube. Robust weighted least-squares (IRLS with a
+// Tukey biweight) so wrong/uncertain corners get down-weighted and the good ones
+// dominate — the 8 noisy points are averaged into one coherent cube pose.
 
 // 8 cube corners in model index order (i*4+j*2+k for x,y,z ∈ {-0.5,0.5}).
 const CUBE3D: [number, number, number][] = [];
 for (const x of [-0.5, 0.5]) for (const y of [-0.5, 0.5]) for (const z of [-0.5, 0.5]) CUBE3D.push([x, y, z]);
 
-// Gauss-Jordan solve of an n×n system (returns null if singular).
 function solve(A: number[][], b: number[]): number[] | null {
   const n = b.length;
   const M = A.map((r, i) => [...r, b[i]]);
@@ -27,38 +26,47 @@ function solve(A: number[][], b: number[]): number[] | null {
 
 export interface FitCube { corners: { x: number; y: number }[]; residual: number }
 
-// Returns 8 reprojected corners forming a consistent cube, or null if the
-// confident corners don't constrain a good fit (too few / degenerate / bad).
-export function fitCube(pts: { x: number; y: number; on: boolean }[]): FitCube | null {
-  const idx: number[] = [];
-  for (let i = 0; i < 8; i++) if (pts[i].on) idx.push(i);
-  if (idx.length < 5) return null;   // need enough non-coplanar points
+// pts: all 8 corners with a confidence weight w (0..1). Returns the reprojected
+// complete cube, or null if the points don't agree on a cube.
+export function fitCube(pts: { x: number; y: number; w: number }[]): FitCube | null {
+  const w = pts.map((p) => Math.max(0, Math.min(1, p.w)));
+  let corners: { x: number; y: number }[] | null = null;
+  let residual = 1;
 
-  // normal equations for m=[m0..m7]:  m0..3·[X,Y,Z,1]=x ,  m4..7·[X,Y,Z,1]=y
-  const AtA = Array.from({ length: 8 }, () => new Array(8).fill(0));
-  const Atb = new Array(8).fill(0);
-  for (const i of idx) {
-    const [X, Y, Z] = CUBE3D[i]; const v = [X, Y, Z, 1];
-    const x = pts[i].x, y = pts[i].y;
-    for (let a = 0; a < 4; a++) {
-      for (let b = 0; b < 4; b++) { AtA[a][b] += v[a] * v[b]; AtA[a + 4][b + 4] += v[a] * v[b]; }
-      Atb[a] += v[a] * x; Atb[a + 4] += v[a] * y;
+  for (let iter = 0; iter < 4; iter++) {
+    const AtA = Array.from({ length: 8 }, () => new Array(8).fill(0));
+    const Atb = new Array(8).fill(0);
+    let eff = 0;
+    for (let i = 0; i < 8; i++) {
+      const wi = w[i];
+      if (wi < 1e-3) continue;
+      eff += wi;
+      const [X, Y, Z] = CUBE3D[i]; const v = [X, Y, Z, 1];
+      for (let a = 0; a < 4; a++) {
+        for (let b = 0; b < 4; b++) { AtA[a][b] += wi * v[a] * v[b]; AtA[a + 4][b + 4] += wi * v[a] * v[b]; }
+        Atb[a] += wi * v[a] * pts[i].x; Atb[a + 4] += wi * v[a] * pts[i].y;
+      }
     }
+    if (eff < 3.0) return null;            // not enough total confidence
+    for (let d = 0; d < 8; d++) AtA[d][d] += 1e-3;   // ridge
+    const m = solve(AtA, Atb);
+    if (!m) return null;
+    corners = CUBE3D.map(([X, Y, Z]) => ({
+      x: m[0] * X + m[1] * Y + m[2] * Z + m[3],
+      y: m[4] * X + m[5] * Y + m[6] * Z + m[7],
+    }));
+    // IRLS reweight: Tukey biweight on the reprojection residual (scale ~0.06)
+    let er = 0, ew = 0;
+    for (let i = 0; i < 8; i++) {
+      const r = Math.hypot(corners[i].x - pts[i].x, corners[i].y - pts[i].y);
+      const rr = Math.min(1, r / 0.07);
+      const robust = (1 - rr * rr) ** 2;   // → 0 for outliers, 1 for inliers
+      w[i] = Math.max(0, Math.min(1, pts[i].w)) * robust;
+      if (pts[i].w > 0.35) { er += r * pts[i].w; ew += pts[i].w; }
+    }
+    residual = ew > 0 ? er / ew : 1;
   }
-  for (let d = 0; d < 8; d++) AtA[d][d] += 1e-3;   // ridge → stabilise
-  const m = solve(AtA, Atb);
-  if (!m) return null;
 
-  const corners = CUBE3D.map(([X, Y, Z]) => ({
-    x: m[0] * X + m[1] * Y + m[2] * Z + m[3],
-    y: m[4] * X + m[5] * Y + m[6] * Z + m[7],
-  }));
-
-  // reject a bad/degenerate fit: mean reprojection error on the confident corners
-  let err = 0;
-  for (const i of idx) err += Math.hypot(corners[i].x - pts[i].x, corners[i].y - pts[i].y);
-  const residual = err / idx.length;
-  if (residual > 0.06) return null;   // fit doesn't explain the detections → fall back
-
+  if (!corners || residual > 0.09) return null;   // fit doesn't explain the confident corners
   return { corners, residual };
 }
