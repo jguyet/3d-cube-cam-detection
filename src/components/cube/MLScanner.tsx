@@ -91,7 +91,9 @@ export default function MLScanner() {
     setError(null); setStatus("loading");
     try {
       const net = new CubeNet();
-      await net.load();
+      // ?model=iter8 → /models/cube_detector_iter8.onnx (compare variants live)
+      const m = new URLSearchParams(window.location.search).get("model");
+      await net.load(m ? `/models/cube_detector_${m}.onnx` : "/models/cube_detector.onnx");
       netRef.current = net;
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
