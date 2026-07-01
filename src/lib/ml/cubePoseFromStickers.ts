@@ -384,28 +384,33 @@ function extractFaces(shapes: Shape[]): Face[] {
     groups.push(g);
   }
 
-  // split a group by sticker orientation (angle mod 90°) — same-face stickers share it
-  const splitByOrient = (g: number[]): number[][] => {
-    const ang = (i: number) => { const c = items[i].s.corners; const a = { x: c[1].x - c[0].x, y: c[1].y - c[0].y }; return ((Math.atan2(a.y, a.x) % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2); };
-    const sub: number[][] = []; const gA = g.map((i) => ({ i, a: ang(i) }));
-    for (const it of gA) {
-      let placed = false;
-      for (const s of sub) { let d = Math.abs(ang(s[0]) - it.a); d = Math.min(d, Math.PI / 2 - d); if (d < 0.26) { s.push(it.i); placed = true; break; } }
-      if (!placed) sub.push([it.i]);
-    }
-    return sub;
-  };
+  // ITERATIVE extraction: pull the densest 3×3 face out of a (possibly merged 2-3
+  // face) cluster, remove its stickers, repeat → separates faces on equatorial views
+  // where the fold/orientation cues collapse. This is what enables multi-face pose.
   let faces: Face[] = [];
+  let iterativeMulti = false;
   for (const g of groups) {
     if (g.length < 2) continue;
-    let face = assignGrid(g, items, adj);
-    // merged group (2-3 faces connected across a fold) → split by orientation
-    if (!face) {
-      const subs = splitByOrient(g);
-      continue;
+    let remaining = g.slice();
+    const nBefore = faces.length;
+    for (let iter = 0; iter < 3 && remaining.length >= 4; iter++) {
+      const face = assignGrid(remaining, items, adj);
+      if (!face || face.stickers.length < 4) break;
+      faces.push(face);
+      const usedIds = new Set(face.stickers.map((s) => s.idx));
+      const next = remaining.filter((u) => !usedIds.has(u));
+      if (next.length === remaining.length) break;   // no progress
+      remaining = next;
     }
-    if (face) faces.push(face);
+    if (faces.length - nBefore >= 2) iterativeMulti = true;
   }
+  if (faces.length === 0) {
+    const big = groups.filter((g) => g.length >= 2).sort((a, b) => b.length - a.length)[0];
+    if (big) { const f = assignGrid(big, items, adj); if (f) faces.push(f); }
+  }
+  // when iterative extraction already SEPARATED faces, return them directly — the
+  // re-collection/dedupe below re-absorbs them under near-equatorial homographies.
+  if (iterativeMulti) { faces.sort((a, b) => b.stickers.length - a.stickers.length); return faces.slice(0, 3); }
   faces.sort((a, b) => b.stickers.length - a.stickers.length);
   faces = faces.slice(0, 6); // keep extra seeds; re-collection + dedupe prune them
 
@@ -571,6 +576,59 @@ function medianDiag(shapes: Shape[]): number {
   return d[d.length >> 1] || 10;
 }
 
+// GLOBAL face separation: each sticker's local homography is a face hypothesis;
+// collect the stickers that rectify through it to integer grid cells as clean unit
+// squares. Take the biggest such set = one face, remove it, repeat. Robust on the
+// merged/equatorial views where the pairwise graph collapses the faces together.
+function extractFacesV2(shapes: Shape[]): Face[] {
+  const items: Item[] = shapes.map((s, i) => ({ s, i, loc: stickerLocal(s) }));
+  const remaining = new Set(items.filter((it) => it.loc).map((it) => it.i));
+  const faces: Face[] = [];
+  const skewOK = (Hi: Mat, s: Shape): boolean => {
+    const rc = s.corners.map((c) => applyH(Hi, c));
+    const top = { x: rc[1].x - rc[0].x, y: rc[1].y - rc[0].y };
+    const lft = { x: rc[3].x - rc[0].x, y: rc[3].y - rc[0].y };
+    const wl = Math.hypot(top.x, top.y), hl = Math.hypot(lft.x, lft.y);
+    if (wl < 1e-6 || hl < 1e-6) return false;
+    if (Math.abs(top.y) / wl > 0.30 || Math.abs(lft.x) / hl > 0.30) return false;
+    return wl >= 0.5 && wl <= 2 && hl >= 0.5 && hl <= 2;
+  };
+  for (let pass = 0; pass < 3 && remaining.size >= 4; pass++) {
+    let best: { i: number; gx: number; gy: number }[] = [];
+    for (const seed of remaining) {
+      const loc = items[seed].loc; if (!loc) continue;
+      const coll: { i: number; gx: number; gy: number }[] = [];
+      for (const o of remaining) {
+        const g = applyH(loc.Hi, items[o].s.center);
+        const gx = Math.round(g.x), gy = Math.round(g.y);
+        if (Math.abs(gx) > 2 || Math.abs(gy) > 2) continue;
+        if (Math.abs(g.x - gx) > 0.35 || Math.abs(g.y - gy) > 0.35) continue;
+        if (o !== seed && !skewOK(loc.Hi, items[o].s)) continue;
+        coll.push({ i: o, gx, gy });
+      }
+      // clip to the densest 3×3 window (dedupe cell collisions)
+      let bo = { ox: -2, oy: -2, n: -1 };
+      for (let ox = -2; ox <= 0; ox++) for (let oy = -2; oy <= 0; oy++) {
+        let c = 0; for (const it of coll) if (it.gx >= ox && it.gx <= ox + 2 && it.gy >= oy && it.gy <= oy + 2) c++;
+        if (c > bo.n) bo = { ox, oy, n: c };
+      }
+      const seen = new Set<string>(); const set: { i: number; gx: number; gy: number }[] = [];
+      for (const it of coll) {
+        if (it.gx < bo.ox || it.gx > bo.ox + 2 || it.gy < bo.oy || it.gy > bo.oy + 2) continue;
+        const key = (it.gx - bo.ox) + ',' + (it.gy - bo.oy); if (seen.has(key)) continue; seen.add(key);
+        set.push({ i: it.i, gx: it.gx - bo.ox, gy: it.gy - bo.oy });
+      }
+      if (set.length > best.length) best = set;
+    }
+    if (best.length < 4) break;
+    const st: FaceSticker[] = best.map((e) => ({ shape: items[e.i].s, idx: e.i, gx: e.gx, gy: e.gy }));
+    const Hf = fitFaceH(st, null); if (!Hf) break;
+    faces.push({ stickers: st, H: Hf, cornersImg: faceCorners(Hf) });
+    for (const e of best) remaining.delete(e.i);
+  }
+  return faces.slice(0, 3);
+}
+
 // ---------------------------------------------------------------- main entry
 export function cubePoseFromStickers(shapes: Shape[], W: number, H: number): CubePose | null {
   try {
@@ -592,7 +650,7 @@ export function cubePoseFromStickers(shapes: Shape[], W: number, H: number): Cub
       }
     }
 
-    const faces = extractFaces(good);
+    const faces = extractFacesV2(good);
     if (faces.length === 0) return null;
     const diag = Math.hypot(W, H);
     const mDiag = medianDiag(good);
@@ -622,7 +680,6 @@ export function cubePoseFromStickers(shapes: Shape[], W: number, H: number): Cub
       x: frontPts.reduce((s, p) => s + p.x, 0) / frontPts.length,
       y: frontPts.reduce((s, p) => s + p.y, 0) / frontPts.length,
     };
-    for (const p of frontPts) if (dist(p, C) > 2.0 * mDiag) return singleFacePose(F[0], W, H, good.length);
 
     // Per face: front-corner index, grid-line tangent per axis at C, and the far
     // C-adjacent corners. Adjacent faces share exactly one cube edge along which both
@@ -716,7 +773,7 @@ export function cubePoseFromStickers(shapes: Shape[], W: number, H: number): Cub
     const coverage = Math.min(1, cnt / (9 * nfaces));
     const base = nfaces >= 3 ? 0.92 : 0.82;
     let conf = base;
-    conf *= Math.max(0, 1 - rms / (0.04 * diag));
+    conf *= Math.max(0.2, 1 - rms / (0.09 * diag));
     conf *= 0.5 + 0.5 * coverage;
     conf *= 0.6 + 0.4 * consist;
     conf = Math.max(0.05, Math.min(1, conf));
