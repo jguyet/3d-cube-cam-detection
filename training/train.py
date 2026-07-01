@@ -107,7 +107,7 @@ def soft_argmax(hm):
     y = (p.sum(3) * ys).sum(2)   # [B,C]
     return torch.stack([x, y], dim=2), p
 
-def gaussian_target(coords, H, W, device, sigma=0.05):
+def gaussian_target(coords, H, W, device, sigma=0.035):
     """[B,C,2] in 0..1 → [B,C,H,W] gaussians (sum 1 per channel) centred on each corner."""
     B, C, _ = coords.shape
     xs = torch.linspace(0, 1, W, device=device).view(1, 1, 1, W)

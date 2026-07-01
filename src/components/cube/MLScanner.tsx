@@ -6,7 +6,7 @@ import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
-const PRESENCE_MIN = 0.7;   // stricter presence gate → fewer false "cube here"
+const PRESENCE_MIN = 0.3;   // calibrated: cube presence ~0.67, no-cube ~0.0 → 0.3 gives recall≈0.72, FP≈0
 const VIS_MIN = 0.6;        // hide low-confidence corners (kills the centre-collapse artefact)
 
 // Live inference with the trained ONNX cube detector. Drop your trained
