@@ -41,17 +41,11 @@ export function buildCube(scheme: Scheme, rng: () => number): THREE.Group {
   // slight per-cube gloss so the dataset spans matte→shiny real cubes
   const baseRough = 0.16 + rng() * 0.22;
 
-  // ~18% "solved" cubes: each face a single colour (a solved cube looks very
-  // different from a scramble — the net must still recognise it as a cube).
-  const solved = rng() < 0.18;
-  const faceCols = PALETTE.slice(); // one colour per face when solved
-  for (let a = faceCols.length - 1; a > 0; a--) { const b = (rng() * (a + 1)) | 0; [faceCols[a], faceCols[b]] = [faceCols[b], faceCols[a]]; }
-
-  CUBE_FACES.forEach((f, fi) => {
+  for (const f of CUBE_FACES) {
     const n = new THREE.Vector3(...f.n), u = new THREE.Vector3(...f.u), v = new THREE.Vector3(...f.v);
     for (let i = -1; i <= 1; i++)
       for (let j = -1; j <= 1; j++) {
-        const col = new THREE.Color(solved ? faceCols[fi] : PALETTE[(rng() * PALETTE.length) | 0]);
+        const col = new THREE.Color(PALETTE[(rng() * PALETTE.length) | 0]);
         col.offsetHSL((rng() - 0.5) * 0.02, (rng() - 0.5) * 0.08, (rng() - 0.5) * 0.06); // subtle real-world variation
         const mat = new THREE.MeshStandardMaterial({
           color: col, roughness: baseRough + (rng() - 0.5) * 0.08, metalness: 0.0, envMapIntensity: 1.1,
@@ -68,6 +62,6 @@ export function buildCube(scheme: Scheme, rng: () => number): THREE.Group {
         plane.name = "sticker";
         g.add(plane);
       }
-  });
+  }
   return g;
 }

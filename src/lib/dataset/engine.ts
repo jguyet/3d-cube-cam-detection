@@ -35,7 +35,6 @@ export class DatasetEngine {
   private camera: THREE.PerspectiveCamera;
   private rig = new THREE.Group();      // holds cube + hands; gets the random pose
   private cube: THREE.Group | null = null;
-  private extras = new THREE.Group();   // distractor objects (clutter) beside the cube
   private lights = new THREE.Group();
   private ray = new THREE.Raycaster();
   private bgItems: BgItem[] = [];
@@ -52,7 +51,6 @@ export class DatasetEngine {
     this.renderer.setPixelRatio(1);
     this.camera = new THREE.PerspectiveCamera(this.fov, this.aspect, 0.1, 100);
     this.scene.add(this.rig);
-    this.scene.add(this.extras);
     this.scene.add(this.lights);
     // Image-based lighting → realistic glossy plastic reflections on the stickers
     // (the biggest sim2real cue for a real Rubik's cube).
@@ -64,7 +62,6 @@ export class DatasetEngine {
 
   randomize(): Sample {
     this.disposeGroup(this.rig); this.rig.clear(); this.cube = null;
-    this.disposeGroup(this.extras); this.extras.clear();
 
     // ~15% synthetic NEGATIVE frames (real Kaggle no-cube crops are added to the
     // dataset separately and do the heavy lifting; keep synth negatives modest so
@@ -130,23 +127,20 @@ export class DatasetEngine {
     // (covers the blur), otherwise a large-skewed random size with a solid floor
     // so the cube is always a good, clearly-visible size (never tiny).
     const useBbox = !!(item && item.bbox && rng() < 0.25);
-    // ~22% CLOSE-UPS: a big cube that fills/overflows the frame (like a cube held
-    // near the camera). Off-frame corners are auto-labelled invisible.
-    const closeup = !useBbox && rng() < 0.22;
     let s = useBbox
       ? Math.max(item!.bbox!.w, item!.bbox!.h) * 2 * D * t / 1.3 * (1.0 + rng() * 0.5)
-      : closeup ? 1.9 + rng() * 1.9 : 0.9 + Math.pow(rng(), 0.55) * 1.7;
+      : 0.9 + Math.pow(rng(), 0.55) * 1.7;
 
-    // Bounding-sphere radius = 0.866·s. For non-close-ups, shrink if it can't fit
-    // and bound the centre so the WHOLE cube stays on-screen. Close-ups skip this.
-    const margin = 0.08;
+    // Bounding-sphere radius = 0.866·s. Shrink if it can't fit; then bound the
+    // center so the WHOLE cube stays on-screen (fixes "cube leaves the frame").
+    const margin = 0.08;   // keep the cube well clear of every edge
     const rY0 = (0.866 * s) / (D * t);
-    if (!closeup && rY0 > 1 - margin) s *= (1 - margin) / rY0;
+    if (rY0 > 1 - margin) s *= (1 - margin) / rY0;
     this.rig.scale.setScalar(s);
     const rYn = (0.866 * s) / (D * t);
     const rXn = rYn / this.aspect;
-    const okX = closeup ? 0.22 : Math.max(0, 1 - margin - rXn);
-    const okY = closeup ? 0.22 : Math.max(0, 1 - margin - rYn);
+    const okX = Math.max(0, 1 - margin - rXn);
+    const okY = Math.max(0, 1 - margin - rYn);
 
     let nx: number, ny: number;
     if (useBbox) {
@@ -158,31 +152,6 @@ export class DatasetEngine {
     }
     // NDC → world at z=0 (x scaled by aspect for the 16:9 frame)
     this.rig.position.set(nx * D * t * this.aspect, ny * D * t, 0);
-
-    // DISTRACTOR clutter BESIDE/BEHIND the cube (never fully in front), so the
-    // corner heatmaps learn to lock onto the CUBE, not other objects' corners.
-    // Dropped on retries so clutter can't force an all-occluded (degenerate) frame.
-    const ndist = (attempt < 2 && rng() < 0.55) ? (1 + ((rng() * 2) | 0)) : 0;
-    for (let k = 0; k < ndist; k++) {
-      const o = this.makeDistractor();
-      const dnx = Math.max(-0.95, Math.min(0.95, nx + (rng() < 0.5 ? -1 : 1) * (0.35 + rng() * 0.9)));
-      const dny = Math.max(-0.95, Math.min(0.95, ny + (rng() - 0.5) * 1.4));
-      const z = -(0.15 + rng() * 1.1) * s;   // behind the cube (farther from camera)
-      o.position.set(dnx * D * t * this.aspect, dny * D * t, z);
-      o.scale.setScalar((0.4 + rng() * 0.8) * s);
-      o.quaternion.setFromEuler(new THREE.Euler(rng() * 6, rng() * 6, rng() * 6));
-      this.extras.add(o);
-    }
-    this.extras.updateMatrixWorld(true);
-  }
-
-  private makeDistractor(): THREE.Mesh {
-    const kind = rng();
-    const geo = kind < 0.5 ? new THREE.BoxGeometry(0.5 + rng() * 1.0, 0.5 + rng() * 1.0, 0.5 + rng() * 1.0)
-      : kind < 0.8 ? new THREE.SphereGeometry(0.4 + rng() * 0.5, 16, 16)
-        : new THREE.CylinderGeometry(0.3 + rng() * 0.3, 0.3 + rng() * 0.3, 0.6 + rng() * 0.8, 16);
-    const col = new THREE.Color().setHSL(rng(), 0.4 + rng() * 0.5, 0.35 + rng() * 0.45);
-    return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, roughness: 0.3 + rng() * 0.5, metalness: 0.03, envMapIntensity: 0.9 }));
   }
 
   render() { this.renderer.render(this.scene, this.camera); }
@@ -194,7 +163,6 @@ export class DatasetEngine {
   private labels(): Sample {
     const occ: THREE.Object3D[] = [];
     this.cube!.traverse((o) => { if ((o as THREE.Mesh).isMesh) occ.push(o); });
-    this.extras.traverse((o) => { if ((o as THREE.Mesh).isMesh) occ.push(o); }); // clutter occludes corners too
     const cam = this.camera, cm = this.cube!.matrixWorld;
 
     const corners: Corner[] = CUBE_CORNERS.map((c) => {

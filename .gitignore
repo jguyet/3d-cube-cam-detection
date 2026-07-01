@@ -53,3 +53,8 @@ _*.ts
 
 # eval harness cache
 /.evalcache/
+
+# training artifacts (root)
+/best.pt
+/cube_detector.onnx
+/cube_detector.onnx.data
