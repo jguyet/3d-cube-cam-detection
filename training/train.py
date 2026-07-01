@@ -144,13 +144,31 @@ class CubeNet(nn.Module):
             nn.Linear(256, N_CORNERS + 6 + 1),
         )
 
-    def forward(self, x, return_hm: bool = False):
+    def heads(self, x):
         f = self.features(x)
         hm = F.interpolate(self.decoder(f), size=(HM_H, HM_W), mode="bilinear", align_corners=False)
+        go = torch.sigmoid(self.ghead(self.pool(f).flatten(1)))  # [B,15] = 8 vis|6 faces|1 present
+        return hm, go
+
+    def forward(self, x, return_hm: bool = False):
+        hm, go = self.heads(x)
         coords, prob = soft_argmax(hm)                       # [B,8,2], [B,8,H,W]
-        go = torch.sigmoid(self.ghead(self.pool(f).flatten(1)))  # [B,15]
         out = torch.cat([coords.reshape(x.shape[0], 16), go], dim=1)  # [B,31]
         return (out, prob) if return_hm else out
+
+class InferModel(nn.Module):
+    """Export wrapper: outputs the raw corner HEATMAPS (softmax prob) + globals so
+    the browser decodes each corner by its heatmap PEAK (argmax) — no centre bias,
+    and the peak value is a per-corner confidence."""
+    def __init__(self, net):
+        super().__init__()
+        self.net = net
+
+    def forward(self, x):
+        hm, go = self.net.heads(x)
+        B, C, H, W = hm.shape
+        prob = torch.softmax(hm.reshape(B, C, H * W), dim=2).reshape(B, C, H, W)
+        return prob, go
 
 # ----------------------------- loss -----------------------------
 def loss_fn(pred, prob, tgt):
@@ -247,11 +265,12 @@ def export_onnx(net, dev):
     import onnx
     net.eval()
     net.to("cpu")  # ONNX export is safest from CPU
+    wrap = InferModel(net).eval()
     dummy = torch.randn(1, 3, IMG_H, IMG_W)
     torch.onnx.export(
-        net, dummy, "cube_detector.onnx",
-        input_names=["image"], output_names=["pred"],
-        dynamic_axes={"image": {0: "batch"}, "pred": {0: "batch"}},
+        wrap, dummy, "cube_detector.onnx",
+        input_names=["image"], output_names=["heatmaps", "globals"],
+        dynamic_axes={"image": {0: "batch"}, "heatmaps": {0: "batch"}, "globals": {0: "batch"}},
         opset_version=18,
     )
     # Consolidate any external-weights file into ONE self-contained .onnx so it

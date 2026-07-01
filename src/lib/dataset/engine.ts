@@ -56,12 +56,11 @@ export class DatasetEngine {
   setBackgrounds(items: BgItem[]) { this.bgItems = items; }
 
   randomize(): Sample {
-    if (this.cube) { this.rig.remove(this.cube); this.disposeGroup(this.cube); this.cube = null; }
-    this.rig.clear();
+    this.disposeGroup(this.rig); this.rig.clear(); this.cube = null;
 
-    // ~18% NEGATIVE frames: a realistic background (sometimes a lone hand) and
-    // NO cube. Teaches the net "no cube here" so it stops firing on everything.
-    if (rng() < 0.18) return this.negativeSample();
+    // ~30% NEGATIVE frames: a realistic background with clutter/hands/distractors
+    // but NO cube. Teaches the net to NOT fire on busy real scenes.
+    if (rng() < 0.30) return this.negativeSample();
 
     // Build a positive; retry if the cube ends up mostly hidden by a hand. Later
     // attempts drop the hands, so an over-occluding hand can't produce a bad label.
@@ -78,8 +77,7 @@ export class DatasetEngine {
   }
 
   private buildPositive(attempt: number) {
-    if (this.cube) { this.rig.remove(this.cube); this.disposeGroup(this.cube); }
-    this.rig.clear();
+    this.disposeGroup(this.rig); this.rig.clear();
     this.rig.position.set(0, 0, 0);
     this.rig.scale.setScalar(1);
 
@@ -187,28 +185,40 @@ export class DatasetEngine {
     return { corners, faces, scheme: this.lastScheme, present: 1 };
   }
 
-  // Background-only frame (no cube), sometimes with a lone floating hand so the
-  // net learns skin/hands aren't cubes. Labels: present=0, all corners hidden.
+  // Background-only frame (no cube). Populated with a lone hand and/or HARD
+  // NEGATIVE distractors — colourful boxes/spheres/cylinders — so the net learns
+  // "colourful clutter ≠ a 3×3 Rubik's cube" and stops firing on busy scenes.
   private negativeSample(): Sample {
     this.cube = null;
-    if (rng() < 0.4) {
-      const h = buildHand(rng);
-      h.position.set((rng() - 0.5) * 1.5, (rng() - 0.5) * 1.2, 0);
-      h.scale.setScalar(0.6 + rng() * 0.8);
-      this.rig.add(h);
+    this.rig.position.set(0, 0, 0); this.rig.scale.setScalar(1); this.rig.quaternion.identity();
+    const D = 3.2 + rng() * 2.6;
+    this.camera.position.set(0, 0, D); this.camera.lookAt(0, 0, 0);
+    const t = this.tanHalf, ax = t * this.aspect;
+    const place = (o: THREE.Object3D, sc: number) => {
+      const nx = (rng() * 2 - 1) * 0.75, ny = (rng() * 2 - 1) * 0.75;
+      o.position.set(nx * D * ax, ny * D * t, 0);
+      o.scale.setScalar(sc);
+      o.quaternion.setFromEuler(new THREE.Euler(rng() * 6, rng() * 6, rng() * 6));
+    };
+    if (rng() < 0.35) { const h = buildHand(rng); place(h, 0.6 + rng() * 0.8); this.rig.add(h); }
+    const nd = 1 + ((rng() * 3) | 0);   // 1-3 distractor objects
+    for (let i = 0; i < nd; i++) {
+      const kind = rng();
+      const geo = kind < 0.5 ? new THREE.BoxGeometry(0.5 + rng() * 1.3, 0.5 + rng() * 1.3, 0.5 + rng() * 1.3)
+        : kind < 0.8 ? new THREE.SphereGeometry(0.4 + rng() * 0.6, 16, 16)
+          : new THREE.CylinderGeometry(0.3 + rng() * 0.4, 0.3 + rng() * 0.4, 0.6 + rng() * 1.0, 16);
+      const col = new THREE.Color().setHSL(rng(), 0.4 + rng() * 0.5, 0.35 + rng() * 0.45);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, roughness: 0.3 + rng() * 0.5, metalness: 0.03 }));
+      place(mesh, 0.7 + rng() * 1.1);
+      this.rig.add(mesh);
     }
-    this.rig.quaternion.copy(new THREE.Quaternion().setFromEuler(
-      new THREE.Euler((rng() - 0.5) * 2, rng() * Math.PI * 2, (rng() - 0.5) * 2)));
     this.lights.clear();
-    this.lights.add(new THREE.AmbientLight(0xffffff, 0.4 + rng() * 0.5));
-    const dl = new THREE.DirectionalLight(0xffffff, 0.5 + rng() * 0.8);
+    this.lights.add(new THREE.AmbientLight(0xffffff, 0.35 + rng() * 0.5));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.5 + rng() * 0.9);
     dl.position.set((rng() - 0.5) * 6, (rng() - 0.5) * 6, 3 + rng() * 4);
     this.lights.add(dl);
     const item = (this.bgItems.length && rng() < 0.92) ? this.bgItems[(rng() * this.bgItems.length) | 0] : null;
     this.scene.background = item ? item.tex : this.proceduralBg();
-    this.camera.position.set(0, 0, 3.5 + rng() * 2.5); this.camera.lookAt(0, 0, 0);
-    this.rig.position.set((rng() - 0.5) * 1.2, (rng() - 0.5) * 0.9, 0);
-    this.rig.scale.setScalar(0.8 + rng() * 0.6);
     this.rig.updateMatrixWorld(true);
     const corners: Corner[] = Array.from({ length: 8 }, () => ({ x: 0.5, y: 0.5, v: 0 as 0 }));
     return { corners, faces: [0, 0, 0, 0, 0, 0], scheme: "black", present: 0 };
