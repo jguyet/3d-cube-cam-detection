@@ -127,20 +127,23 @@ export class DatasetEngine {
     // (covers the blur), otherwise a large-skewed random size with a solid floor
     // so the cube is always a good, clearly-visible size (never tiny).
     const useBbox = !!(item && item.bbox && rng() < 0.25);
+    // ~22% CLOSE-UPS: a big cube that fills/overflows the frame (like a cube held
+    // near the camera). Off-frame corners are auto-labelled invisible.
+    const closeup = !useBbox && rng() < 0.22;
     let s = useBbox
       ? Math.max(item!.bbox!.w, item!.bbox!.h) * 2 * D * t / 1.3 * (1.0 + rng() * 0.5)
-      : 0.9 + Math.pow(rng(), 0.55) * 1.7;
+      : closeup ? 1.9 + rng() * 1.9 : 0.9 + Math.pow(rng(), 0.55) * 1.7;
 
-    // Bounding-sphere radius = 0.866·s. Shrink if it can't fit; then bound the
-    // center so the WHOLE cube stays on-screen (fixes "cube leaves the frame").
-    const margin = 0.08;   // keep the cube well clear of every edge
+    // Bounding-sphere radius = 0.866·s. For non-close-ups, shrink if it can't fit
+    // and bound the centre so the WHOLE cube stays on-screen. Close-ups skip this.
+    const margin = 0.08;
     const rY0 = (0.866 * s) / (D * t);
-    if (rY0 > 1 - margin) s *= (1 - margin) / rY0;
+    if (!closeup && rY0 > 1 - margin) s *= (1 - margin) / rY0;
     this.rig.scale.setScalar(s);
     const rYn = (0.866 * s) / (D * t);
     const rXn = rYn / this.aspect;
-    const okX = Math.max(0, 1 - margin - rXn);
-    const okY = Math.max(0, 1 - margin - rYn);
+    const okX = closeup ? 0.22 : Math.max(0, 1 - margin - rXn);
+    const okY = closeup ? 0.22 : Math.max(0, 1 - margin - rYn);
 
     let nx: number, ny: number;
     if (useBbox) {
