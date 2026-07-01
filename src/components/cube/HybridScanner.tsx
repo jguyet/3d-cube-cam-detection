@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
-import { fitCube } from "@/lib/ml/cubeFit";
-import { refineCubeSilhouette } from "@/lib/ml/cubeRefine";
+import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
+import { CubePoseFromShapes } from "@/lib/rubik-detector/core/CubePoseFromShapes";
+import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
@@ -20,6 +21,8 @@ export default function HybridScanner() {
   const cameraRef = useRef<CameraStream | null>(null);
   const grabberRef = useRef<FrameGrabber | null>(null);
   const netRef = useRef<CubeNet | null>(null);
+  const shapeRef = useRef<ShapeDetector | null>(null);
+  const poseRef = useRef<CubePoseFromShapes | null>(null);
   const rafRef = useRef(0);
   const busyRef = useRef(false);
   const histRef = useRef<MLResult[]>([]);
@@ -67,39 +70,44 @@ export default function HybridScanner() {
       return { x: median(xs), y: median(ys), w: median(ws) };
     });
 
-    // ---- ML zone → bbox over the visible corners ----
+    // ---- ML zone → bbox over the visible corners (expanded), in PIXEL coords ----
     const vis = sc.filter((p) => p.w >= VIS_MIN);
     if (vis.length < 3) return;
     let minx = 1, miny = 1, maxx = 0, maxy = 0;
     for (const p of vis) { minx = Math.min(minx, p.x); miny = Math.min(miny, p.y); maxx = Math.max(maxx, p.x); maxy = Math.max(maxy, p.y); }
-    const bbox = { cx: (minx + maxx) / 2, cy: (miny + maxy) / 2, w: Math.max(0.02, maxx - minx), h: Math.max(0.02, maxy - miny) };
+    const ex = 0.18;
+    const rx0 = (minx - ex * (maxx - minx)) * W, rx1 = (maxx + ex * (maxx - minx)) * W;
+    const ry0 = (miny - ex * (maxy - miny)) * H, ry1 = (maxy + ex * (maxy - miny)) * H;
+    const region: Point2[] = [{ x: rx0, y: ry0 }, { x: rx1, y: ry0 }, { x: rx1, y: ry1 }, { x: rx0, y: ry1 }];
 
-    // ---- ML cube-fit (cyan, faint) for reference ----
     if (showMl) {
-      const fitInput = sc.map((p) => ({ x: p.x, y: p.y, w: p.w >= VIS_MIN ? p.w : 0 }));
-      const fit = vis.length >= 6 ? fitCube(fitInput) : null;
-      if (fit) {
-        const c = fit.corners;
-        ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(0,224,255,0.55)";
-        for (const [i, j] of res.edges) {
-          ctx.beginPath(); ctx.moveTo(c[i].x * W, c[i].y * H); ctx.lineTo(c[j].x * W, c[j].y * H); ctx.stroke();
-        }
-      }
+      ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(0,224,255,0.5)"; ctx.setLineDash([5, 4]);
+      ctx.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0); ctx.setLineDash([]);
     }
 
-    // ---- CLASSICAL silhouette inside the ML zone (orange, bold) ----
-    const refined = refineCubeSilhouette(image, bbox);
-    if (refined) {
-      const poly = refined.poly;
+    // ---- CLASSICAL sticker detection INSIDE the ML zone → precise cube pose ----
+    const shapes = shapeRef.current!.detect(image, 150, region);
+    const pose = poseRef.current!.fit(shapes);
+    if (pose) {
+      // detected stickers (faint) + reconstructed cube (orange, precise)
+      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      for (const s of shapes) {
+        ctx.beginPath(); s.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+        ctx.closePath(); ctx.stroke();
+      }
+      const c = pose.corners;
       ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,140,0,0.95)";
-      ctx.beginPath();
-      poly.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-      ctx.closePath(); ctx.stroke();
+      for (const [i, j] of pose.edges) { ctx.beginPath(); ctx.moveTo(c[i].x, c[i].y); ctx.lineTo(c[j].x, c[j].y); ctx.stroke(); }
       ctx.fillStyle = "#ff8c00";
-      for (const p of poly) { ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); }
-      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 210, 24);
+      for (const p of c) { ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 230, 24);
       ctx.fillStyle = "#ffd08a"; ctx.font = "13px system-ui";
-      ctx.fillText(`silhouette classique: ${poly.length} sommets`, 14, 25);
+      ctx.fillText(`cube confirmé: ${shapes.length} stickers, ${pose.faces} faces`, 14, 25);
+    } else {
+      // ML sees a "cube-ish" zone but NO sticker grid → not a real cube (e.g. a face)
+      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
+      ctx.fillStyle = "#fca5a5"; ctx.font = "13px system-ui";
+      ctx.fillText(`zone ML — cube non confirmé (pas de stickers)`, 14, 25);
     }
   };
 
@@ -109,6 +117,8 @@ export default function HybridScanner() {
       const net = new CubeNet();
       await net.load("/models/cube_detector.onnx");   // iter4
       netRef.current = net;
+      shapeRef.current = new ShapeDetector();
+      poseRef.current = new CubePoseFromShapes();
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
@@ -121,7 +131,7 @@ export default function HybridScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current?.reset(); setStatus("idle"); };
 
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
