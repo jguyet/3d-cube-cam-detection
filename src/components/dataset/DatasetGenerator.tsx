@@ -32,6 +32,9 @@ export default function DatasetGenerator() {
     setReady(true);
     regen();
     autoLoadBackgrounds();
+    // load the realistic t-shirt torso + studio HDR, then re-render a sample
+    engine.loadMockup(["/mockup/models/men-tishirt.glb"], "/mockup/hdr/blocky_photo_studio_1k.hdr")
+      .then(() => regen()).catch(() => {});
     return () => engine.dispose();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
