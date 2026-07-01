@@ -94,7 +94,19 @@ class CubeDataset(Dataset):
         faces = [float(v) for v in it["faces"]]
         present = float(it.get("present", 1))  # old datasets had no negatives
         y = torch.tensor(coords + vis + faces + [present], dtype=torch.float32)  # [31]
-        return x, y
+        # Model-B target: sticker-centre density heatmap (max of gaussians at the
+        # VISIBLE sticker centres) — a symmetry-invariant dense target that transfers.
+        sd = torch.zeros(HM_H, HM_W)
+        st = it.get("stickers", [])
+        if st:
+            ys = torch.linspace(0, 1, HM_H).view(HM_H, 1)
+            xs = torch.linspace(0, 1, HM_W).view(1, HM_W)
+            sig = 0.02
+            for s in st:
+                if s.get("v"):
+                    g = torch.exp(-(((xs - s["x"]) ** 2 + (ys - s["y"]) ** 2)) / (2 * sig * sig))
+                    sd = torch.maximum(sd, g)
+        return x, y, sd
 
 # ----------------------------- model -----------------------------
 HM_H, HM_W = 48, 80   # corner-heatmap grid (16:9-ish) — finer = more precise corners
@@ -145,7 +157,7 @@ class CubeNet(nn.Module):
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),   # →24×40
             nn.Conv2d(64, 32, 3, padding=1), nn.BatchNorm2d(32), nn.Hardswish(),
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),   # →48×80
-            nn.Conv2d(32, N_CORNERS, 1),
+            nn.Conv2d(32, N_CORNERS + 1, 1),   # 8 corner heatmaps + 1 sticker-centre density (Model B)
         )
         # global heads: 8 visibilities + 6 faces + 1 presence
         self.ghead = nn.Sequential(
@@ -155,32 +167,33 @@ class CubeNet(nn.Module):
 
     def heads(self, x):
         f = self.features(x)
-        hm = F.interpolate(self.decoder(f), size=(HM_H, HM_W), mode="bilinear", align_corners=False)
+        dec = F.interpolate(self.decoder(f), size=(HM_H, HM_W), mode="bilinear", align_corners=False)
+        hm = dec[:, :N_CORNERS]                              # [B,8,H,W] corner heatmaps
+        st = dec[:, N_CORNERS:N_CORNERS + 1]                 # [B,1,H,W] sticker-density logits
         go = torch.sigmoid(self.ghead(self.pool(f).flatten(1)))  # [B,15] = 8 vis|6 faces|1 present
-        return hm, go
+        return hm, st, go
 
     def forward(self, x, return_hm: bool = False):
-        hm, go = self.heads(x)
+        hm, st, go = self.heads(x)
         coords, prob = soft_argmax(hm)                       # [B,8,2], [B,8,H,W]
         out = torch.cat([coords.reshape(x.shape[0], 16), go], dim=1)  # [B,31]
-        return (out, prob) if return_hm else out
+        return (out, prob, torch.sigmoid(st)) if return_hm else out
 
 class InferModel(nn.Module):
-    """Export wrapper: outputs the raw corner HEATMAPS (softmax prob) + globals so
-    the browser decodes each corner by its heatmap PEAK (argmax) — no centre bias,
-    and the peak value is a per-corner confidence."""
+    """Export wrapper: corner HEATMAPS (softmax prob) + globals + STICKER density
+    (sigmoid) so the browser decodes corners by argmax and sticker centres by NMS."""
     def __init__(self, net):
         super().__init__()
         self.net = net
 
     def forward(self, x):
-        hm, go = self.net.heads(x)
+        hm, st, go = self.net.heads(x)
         B, C, H, W = hm.shape
         prob = torch.softmax(hm.reshape(B, C, H * W), dim=2).reshape(B, C, H, W)
-        return prob, go
+        return prob, go, torch.sigmoid(st)
 
 # ----------------------------- loss -----------------------------
-def loss_fn(pred, prob, tgt):
+def loss_fn(pred, prob, st, tgt, sd):
     pc, pv, pf, pp = pred[:, :16], pred[:, 16:24], pred[:, 24:30], pred[:, 30:31]
     tc, tv, tf, tp = tgt[:, :16], tgt[:, 16:24], tgt[:, 24:30], tgt[:, 30:31]
     bce = F.binary_cross_entropy
@@ -197,7 +210,10 @@ def loss_fn(pred, prob, tgt):
     hmw = tv * tp                                        # [B,8] visible & present
     ce = -(tgt_hm * torch.log(prob + 1e-8)).sum(dim=(2, 3))            # [B,8]
     hml = (ce * hmw).sum() / hmw.sum().clamp(min=1.0)
-    return 4.0 * coord + 3.0 * hml + vis + fac + pres, coord.item()
+    # Model-B sticker-density MSE (only on frames with a cube)
+    stp = st[:, 0]                                        # [B,H,W]
+    sd_loss = (tp.view(-1, 1, 1) * (stp - sd) ** 2).sum() / (tp.sum().clamp(min=1.0) * HM_H * HM_W)
+    return 4.0 * coord + 3.0 * hml + vis + fac + pres + 8.0 * sd_loss, coord.item()
 
 # ----------------------------- train -----------------------------
 def main():
@@ -242,21 +258,21 @@ def main():
     best = 1e9
     for ep in range(a.epochs):
         net.train(); tot = 0
-        for x, y in tl:
-            x, y = x.to(dev), y.to(dev)
+        for x, y, sd in tl:
+            x, y, sd = x.to(dev), y.to(dev), sd.to(dev)
             opt.zero_grad()
-            out, prob = net(x, return_hm=True)
-            loss, _ = loss_fn(out, prob, y)
+            out, prob, st = net(x, return_hm=True)
+            loss, _ = loss_fn(out, prob, st, y, sd)
             loss.backward(); opt.step()
             tot += loss.item() * len(x)
         sch.step()
         # val
         net.eval(); vtot = vcoord = 0
         with torch.no_grad():
-            for x, y in vl:
-                x, y = x.to(dev), y.to(dev)
-                out, prob = net(x, return_hm=True)
-                loss, c = loss_fn(out, prob, y)
+            for x, y, sd in vl:
+                x, y, sd = x.to(dev), y.to(dev), sd.to(dev)
+                out, prob, st = net(x, return_hm=True)
+                loss, c = loss_fn(out, prob, st, y, sd)
                 vtot += loss.item() * len(x); vcoord += c * len(x)
         vtot /= len(va); vcoord /= len(va)
         print(f"ep {ep+1:02d}/{a.epochs}  train {tot/len(tr):.4f}  val {vtot:.4f}  coordMSE {vcoord:.5f}")
@@ -278,8 +294,8 @@ def export_onnx(net, dev):
     dummy = torch.randn(1, 3, IMG_H, IMG_W)
     torch.onnx.export(
         wrap, dummy, "cube_detector.onnx",
-        input_names=["image"], output_names=["heatmaps", "globals"],
-        dynamic_axes={"image": {0: "batch"}, "heatmaps": {0: "batch"}, "globals": {0: "batch"}},
+        input_names=["image"], output_names=["heatmaps", "globals", "stickers"],
+        dynamic_axes={"image": {0: "batch"}, "heatmaps": {0: "batch"}, "globals": {0: "batch"}, "stickers": {0: "batch"}},
         opset_version=18,
     )
     # Consolidate any external-weights file into ONE self-contained .onnx so it
