@@ -50,3 +50,6 @@ _*.ts
 
 # generated datasets (large, regenerable headlessly)
 /dataset-*/
+
+# eval harness cache
+/.evalcache/
