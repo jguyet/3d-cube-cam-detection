@@ -6,6 +6,9 @@ import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
+const PRESENCE_MIN = 0.7;   // stricter presence gate → fewer false "cube here"
+const VIS_MIN = 0.6;        // hide low-confidence corners (kills the centre-collapse artefact)
+
 // Live inference with the trained ONNX cube detector. Drop your trained
 // cube_detector.onnx in public/models/ first.
 export default function MLScanner() {
@@ -38,8 +41,8 @@ export default function MLScanner() {
     busyRef.current = false;
     if (!res) return;
 
-    // Gate on the presence head: don't draw a cube when the net says there's none.
-    if (res.present < 0.5) {
+    // Gate on the presence head (stricter → fewer false "cube here" on clutter).
+    if (res.present < PRESENCE_MIN) {
       ctx.fillStyle = "rgba(0,0,0,0.55)";
       ctx.fillRect(8, 8, 168, 26);
       ctx.fillStyle = "#fca5a5"; ctx.font = "14px system-ui";
@@ -48,22 +51,24 @@ export default function MLScanner() {
     }
 
     const W = grabber.width, H = grabber.height, c = res.corners;
-    // edges between visible corners
+    // Only draw corners the net is confident about. Uncertain corners soft-argmax
+    // to the image centre (flat heatmap) — drawing them creates the "corner stuck
+    // at centre" artefact, so we hide them and any edge touching them.
+    const vis = c.map((p) => p.v >= VIS_MIN);
     ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "rgba(255,90,230,0.95)";
     for (const [i, j] of res.edges) {
-      const vis = c[i].v >= 0.5 && c[j].v >= 0.5;
-      ctx.strokeStyle = vis ? "rgba(255,90,230,0.95)" : "rgba(255,90,230,0.35)";
-      ctx.setLineDash(vis ? [] : [4, 4]);
+      if (!vis[i] || !vis[j]) continue;
       ctx.beginPath();
       ctx.moveTo(c[i].x * W, c[i].y * H);
       ctx.lineTo(c[j].x * W, c[j].y * H);
       ctx.stroke();
     }
-    ctx.setLineDash([]);
-    c.forEach((p) => {
+    c.forEach((p, i) => {
+      if (!vis[i]) return;
       ctx.beginPath();
       ctx.arc(p.x * W, p.y * H, 4, 0, Math.PI * 2);
-      ctx.fillStyle = p.v >= 0.5 ? "#00ff78" : "#ff3c3c";
+      ctx.fillStyle = "#00ff78";
       ctx.fill();
     });
   };
