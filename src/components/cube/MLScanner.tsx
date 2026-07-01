@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
+import { fitCube } from "@/lib/ml/cubeFit";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
@@ -69,20 +70,27 @@ export default function MLScanner() {
       return xs.length >= need ? { x: median(xs), y: median(ys), on: true } : { x: 0, y: 0, on: false };
     });
 
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = "rgba(255,90,230,0.95)";
+    // Fit a real cube to the (noisy/incomplete) corners → reproject all 8 for a
+    // COMPLETE, geometrically-valid overlay. Falls back to raw corners if no fit.
+    const fit = fitCube(sc);
+    const draw = fit
+      ? fit.corners.map((p) => ({ x: p.x, y: p.y, on: true }))
+      : sc;
+
+    ctx.lineWidth = fit ? 3 : 2.5;
+    ctx.strokeStyle = fit ? "rgba(0,224,255,0.95)" : "rgba(255,90,230,0.95)";
     for (const [i, j] of res.edges) {
-      if (!sc[i].on || !sc[j].on) continue;
+      if (!draw[i].on || !draw[j].on) continue;
       ctx.beginPath();
-      ctx.moveTo(sc[i].x * W, sc[i].y * H);
-      ctx.lineTo(sc[j].x * W, sc[j].y * H);
+      ctx.moveTo(draw[i].x * W, draw[i].y * H);
+      ctx.lineTo(draw[j].x * W, draw[j].y * H);
       ctx.stroke();
     }
-    sc.forEach((p) => {
+    draw.forEach((p) => {
       if (!p.on) return;
       ctx.beginPath();
       ctx.arc(p.x * W, p.y * H, 4, 0, Math.PI * 2);
-      ctx.fillStyle = "#00ff78";
+      ctx.fillStyle = fit ? "#00e0ff" : "#00ff78";
       ctx.fill();
     });
   };
