@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { DatasetEngine, reseed, type Sample, type BgItem } from "@/lib/dataset/engine";
 
-const SIZE = 256;       // rendered/exported image size
-const DISPLAY = 384;    // on-screen preview size
+const RENDER_W = 480, RENDER_H = 270;    // rendered/exported image size (16:9)
+const DISPLAY_W = 480, DISPLAY_H = 270;  // on-screen preview size
 
 // parse "..__cx_cy_w_h.jpg" → the original cube bbox (so we place the cube on it)
 function bboxFromName(name: string): BgItem["bbox"] {
@@ -26,7 +26,7 @@ export default function DatasetGenerator() {
 
   useEffect(() => {
     if (!glRef.current) return;
-    const engine = new DatasetEngine(glRef.current, SIZE);
+    const engine = new DatasetEngine(glRef.current, RENDER_W, RENDER_H);
     engineRef.current = engine;
     reseed(Date.now());
     setReady(true);
@@ -62,12 +62,12 @@ export default function DatasetGenerator() {
   const drawOverlay = (s: Sample) => {
     const cv = overlayRef.current;
     if (!cv) return;
-    cv.width = DISPLAY; cv.height = DISPLAY;
+    cv.width = DISPLAY_W; cv.height = DISPLAY_H;
     const ctx = cv.getContext("2d")!;
-    ctx.clearRect(0, 0, DISPLAY, DISPLAY);
+    ctx.clearRect(0, 0, DISPLAY_W, DISPLAY_H);
     // corners
     s.corners.forEach((c, i) => {
-      const x = c.x * DISPLAY, y = c.y * DISPLAY;
+      const x = c.x * DISPLAY_W, y = c.y * DISPLAY_H;
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fillStyle = c.v ? "rgba(0,255,120,0.95)" : "rgba(255,60,60,0.85)";
@@ -82,8 +82,8 @@ export default function DatasetGenerator() {
       const diff = (a ^ b); if (diff !== 1 && diff !== 2 && diff !== 4) continue;
       if (!s.corners[a].v || !s.corners[b].v) continue;
       ctx.beginPath();
-      ctx.moveTo(s.corners[a].x * DISPLAY, s.corners[a].y * DISPLAY);
-      ctx.lineTo(s.corners[b].x * DISPLAY, s.corners[b].y * DISPLAY);
+      ctx.moveTo(s.corners[a].x * DISPLAY_W, s.corners[a].y * DISPLAY_H);
+      ctx.lineTo(s.corners[b].x * DISPLAY_W, s.corners[b].y * DISPLAY_H);
       ctx.stroke();
     }
   };
@@ -165,9 +165,9 @@ export default function DatasetGenerator() {
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
       <div className="grid gap-6 lg:grid-cols-[auto_1fr]">
         <div>
-          <div className="relative" style={{ width: DISPLAY, height: DISPLAY }}>
-            <canvas ref={glRef} width={SIZE} height={SIZE} style={{ width: DISPLAY, height: DISPLAY, imageRendering: "pixelated" }} className="rounded-xl ring-1 ring-white/10" />
-            <canvas ref={overlayRef} className="pointer-events-none absolute inset-0" style={{ width: DISPLAY, height: DISPLAY }} />
+          <div className="relative" style={{ width: DISPLAY_W, height: DISPLAY_H }}>
+            <canvas ref={glRef} width={RENDER_W} height={RENDER_H} style={{ width: DISPLAY_W, height: DISPLAY_H }} className="rounded-xl ring-1 ring-white/10" />
+            <canvas ref={overlayRef} className="pointer-events-none absolute inset-0" style={{ width: DISPLAY_W, height: DISPLAY_H }} />
           </div>
           <p className="mt-2 text-center text-xs text-slate-500 dark:text-slate-400">
             {sample ? `${visibleCorners}/8 coins visibles · ${visibleFaces} faces · ${sample.scheme}-gap` : "…"}
@@ -203,7 +203,7 @@ export default function DatasetGenerator() {
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Export : choisis un dossier (Chrome/Edge) → écrit <code>cube_XXXXX.png</code> + <code>labels.jsonl</code>
             (1 JSON par image : <code>{`{file, corners:[{x,y,v}]×8, faces:[v]×6, scheme}`}</code>). Coords normalisées 0-1.
-            Charge tes fonds (maison/bureaux) pour combler l&apos;écart sim→réel. Image {SIZE}×{SIZE}.
+            Charge tes fonds (maison/bureaux) pour combler l&apos;écart sim→réel. Image {RENDER_W}×{RENDER_H}.
           </p>
         </div>
       </div>

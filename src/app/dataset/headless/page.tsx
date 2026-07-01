@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { DatasetEngine, reseed, type BgItem } from "@/lib/dataset/engine";
 
-const SIZE = 256;
+const RENDER_W = 480, RENDER_H = 270;   // 16:9, matches DatasetEngine default
 
 function bboxFromName(name: string): BgItem["bbox"] {
   const m = name.match(/__([\d.]+)_([\d.]+)_([\d.]+)_([\d.]+)\.jpe?g$/i);
@@ -27,8 +27,8 @@ export default function HeadlessGen() {
     const seed = parseInt(p.get("seed") || "1", 10) || 1;
 
     const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = SIZE;
-    const engine = new DatasetEngine(canvas, SIZE);
+    canvas.width = RENDER_W; canvas.height = RENDER_H;
+    const engine = new DatasetEngine(canvas, RENDER_W, RENDER_H);
     reseed(seed);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

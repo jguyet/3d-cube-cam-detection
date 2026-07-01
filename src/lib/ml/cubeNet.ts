@@ -5,7 +5,7 @@ import * as ort from "onnxruntime-web";
 
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 
-const SIZE = 256;
+const W = 320, H = 180;   // model input (16:9) — must match training IMG_W/IMG_H
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
 
@@ -33,7 +33,7 @@ export class CubeNet {
     this.inputName = this.session.inputNames[0] ?? "image";
     this.outputName = this.session.outputNames[0] ?? "pred";
     this.canvas = document.createElement("canvas");
-    this.canvas.width = this.canvas.height = SIZE;
+    this.canvas.width = W; this.canvas.height = H;
     this.ctx = this.canvas.getContext("2d", { willReadFrequently: true });
     this.tmp = document.createElement("canvas");
   }
@@ -42,21 +42,21 @@ export class CubeNet {
 
   async predict(frame: ImageData): Promise<MLResult | null> {
     if (!this.session || !this.ctx || !this.tmp) return null;
-    // put the frame on a temp canvas, then draw scaled into 256×256
+    // put the frame on a temp canvas, then draw scaled into the model input (16:9)
     this.tmp.width = frame.width; this.tmp.height = frame.height;
     this.tmp.getContext("2d")!.putImageData(frame, 0, 0);
-    this.ctx.drawImage(this.tmp, 0, 0, SIZE, SIZE);
-    const px = this.ctx.getImageData(0, 0, SIZE, SIZE).data;
+    this.ctx.drawImage(this.tmp, 0, 0, W, H);
+    const px = this.ctx.getImageData(0, 0, W, H).data;
 
     // CHW, normalised
-    const data = new Float32Array(3 * SIZE * SIZE);
-    const plane = SIZE * SIZE;
+    const data = new Float32Array(3 * W * H);
+    const plane = W * H;
     for (let i = 0, p = 0; i < px.length; i += 4, p++) {
       data[p] = (px[i] / 255 - MEAN[0]) / STD[0];
       data[plane + p] = (px[i + 1] / 255 - MEAN[1]) / STD[1];
       data[2 * plane + p] = (px[i + 2] / 255 - MEAN[2]) / STD[2];
     }
-    const tensor = new ort.Tensor("float32", data, [1, 3, SIZE, SIZE]);
+    const tensor = new ort.Tensor("float32", data, [1, 3, H, W]);
     const out = await this.session.run({ [this.inputName]: tensor });
     const pred = out[this.outputName].data as Float32Array; // [31]
 

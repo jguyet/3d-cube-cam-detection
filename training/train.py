@@ -32,8 +32,19 @@ from torchvision.models import (
     mobilenet_v3_large, MobileNet_V3_Large_Weights,
 )
 
-IMG = 256
+IMG_W, IMG_H = 320, 180   # model input (16:9, matches the 480×270 dataset ratio)
 N_CORNERS = 8
+
+
+class AddNoise:
+    """Gaussian pixel noise on a tensor (prob p) — closes the sim2real gap a bit."""
+    def __init__(self, p=0.3, std=0.05):
+        self.p, self.std = p, std
+
+    def __call__(self, x):
+        if random.random() < self.p:
+            x = (x + torch.randn_like(x) * self.std).clamp(0, 1)
+        return x
 
 # ----------------------------- dataset -----------------------------
 class CubeDataset(Dataset):
@@ -47,18 +58,22 @@ class CubeDataset(Dataset):
                     self.items.append(json.loads(line))
         self.train = train
         # geometry is fixed (labels are pixel-exact) → only photometric aug
-        aug = []
+        aug, post = [], []
         if train:
             aug = [
-                T.ColorJitter(0.3, 0.3, 0.3, 0.05),
-                T.RandomApply([T.GaussianBlur(3, (0.1, 1.5))], p=0.3),
+                T.ColorJitter(0.4, 0.4, 0.4, 0.08),
+                T.RandomApply([T.GaussianBlur(3, (0.1, 2.0))], p=0.4),
                 T.RandomAdjustSharpness(2, p=0.2),
                 T.RandomAutocontrast(p=0.2),
+                T.RandomGrayscale(p=0.05),
+                T.RandomPosterize(bits=5, p=0.1),
             ]
+            post = [AddNoise(p=0.3, std=0.05)]
         self.tf = T.Compose([
-            T.Resize((IMG, IMG)),
+            T.Resize((IMG_H, IMG_W)),
             *aug,
             T.ToTensor(),
+            *post,
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
 
@@ -188,7 +203,7 @@ def export_onnx(net, dev):
     import onnx
     net.eval()
     net.to("cpu")  # ONNX export is safest from CPU
-    dummy = torch.randn(1, 3, IMG, IMG)
+    dummy = torch.randn(1, 3, IMG_H, IMG_W)
     torch.onnx.export(
         net, dummy, "cube_detector.onnx",
         input_names=["image"], output_names=["pred"],
