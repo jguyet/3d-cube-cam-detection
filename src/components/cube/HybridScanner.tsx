@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
-import { cubePoseFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
+import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -99,6 +99,25 @@ export default function HybridScanner() {
       ctx.closePath(); ctx.stroke();
     }
 
+    // ---- LATTICES (user's idea): link the detected stickers with cube-consistent
+    // connections → COMPLETE 3×3 grid per face, anchored exactly on the stickers.
+    // Missing cells are completed by the face structure; 2 faces show the cube fold.
+    const lattices = faceLatticesFromStickers(shapes as never[]);
+    for (const lat of lattices) {
+      ctx.fillStyle = "rgba(255,140,0,0.16)";              // detected cells, light fill
+      for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
+        if (!lat.filled[gx][gy]) continue;
+        const q = [lat.nodes[gx][gy], lat.nodes[gx + 1][gy], lat.nodes[gx + 1][gy + 1], lat.nodes[gx][gy + 1]];
+        ctx.beginPath(); q.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,140,0,0.9)";  // full grid
+      for (let u = 0; u < 4; u++) {
+        ctx.beginPath(); ctx.moveTo(lat.nodes[u][0].x, lat.nodes[u][0].y); ctx.lineTo(lat.nodes[u][3].x, lat.nodes[u][3].y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(lat.nodes[0][u].x, lat.nodes[0][u].y); ctx.lineTo(lat.nodes[3][u].x, lat.nodes[3][u].y); ctx.stroke();
+      }
+    }
+
     if (pose) {
       // POSE-SPACE (quaternion) temporal filter → rigid, no pixel "swimming".
       // Only when the exposed pose actually reprojects the displayed cube (holds for
@@ -142,7 +161,7 @@ export default function HybridScanner() {
       for (const p of c) { ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); ctx.fill(); }
       ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
       ctx.fillStyle = "#a8f0ff"; ctx.font = "13px system-ui";
-      ctx.fillText(`cube 3D — ${pose.faces} face(s), ${shapes.length} stickers, conf ${pose.confidence.toFixed(2)}`, 14, 25);
+      ctx.fillText(`cube 3D + ${lattices.length} grille(s) — ${shapes.length} stickers, conf ${pose.confidence.toFixed(2)}`, 14, 25);
     } else if (coastRef.current && coastRef.current.ttl > 0) {
       // COAST: hold the last good cube through brief detector dropouts (fading) —
       // kills the blinking that made live feel unstable. Pose filter kept alive.
@@ -158,7 +177,7 @@ export default function HybridScanner() {
       coastRef.current = null;
       ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
       ctx.fillStyle = "#fca5a5"; ctx.font = "13px system-ui";
-      ctx.fillText(`zone ML — pas de cube confirmé (${shapes.length} stickers)`, 14, 25);
+      ctx.fillText(lattices.length ? `grilles: ${lattices.length} (${shapes.length} stickers)` : `zone ML — pas de cube confirmé (${shapes.length} stickers)`, 14, 25);
     }
   };
 

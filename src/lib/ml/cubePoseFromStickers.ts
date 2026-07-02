@@ -577,6 +577,29 @@ function medianDiag(shapes: Shape[]): number {
   return d[d.length >> 1] || 10;
 }
 
+// ---- face LATTICES: connect detected stickers into complete cube-consistent
+// 3×3 grids. The per-face homography is EXACT (anchored on the detected sticker
+// centres), so the full 4×4 node lattice — including cells with NO detected
+// sticker — hugs the real cube face. With 2-3 faces the cube fold appears
+// naturally. This is the "complete shape from linked stickers" first stage.
+export interface FaceLattice {
+  nodes: Point2[][];            // [u][v], u,v ∈ 0..3 — the 16 grid nodes in image px
+  filled: boolean[][];          // [gx][gy] 3×3 — true where a sticker was DETECTED
+  count: number;                // detected stickers on this face
+}
+export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
+  if (!shapes || shapes.length < 3) return [];
+  try {
+    const faces = extractFacesV2(shapes);
+    return faces.map((f) => {
+      const nodes = [0, 1, 2, 3].map((u) => [0, 1, 2, 3].map((v) => applyH(f.H, { x: u, y: v })));
+      const filled = [0, 1, 2].map(() => [false, false, false]);
+      for (const st of f.stickers) if (st.gx >= 0 && st.gx < 3 && st.gy >= 0 && st.gy < 3) filled[st.gx][st.gy] = true;
+      return { nodes, filled, count: f.stickers.length };
+    });
+  } catch { return []; }
+}
+
 // GLOBAL face separation: each sticker's local homography is a face hypothesis;
 // collect the stickers that rectify through it to integer grid cells as clean unit
 // squares. Take the biggest such set = one face, remove it, repeat. Robust on the
