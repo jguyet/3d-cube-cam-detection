@@ -97,6 +97,15 @@ export default function DatasetTester() {
     ctx.fillText(`v3 edge:${res.edgeCount} white:${res.whiteCount} cells:${res.cells.length}`, 5, 14);
     const cellAnno = annosRef.current[key]?.cells ?? {};
     for (const c of res.cells) {
+      // occluded (finger/glare) cell deduced from the grid: grey with a "?".
+      if (c.occluded) {
+        ctx.beginPath(); ctx.arc(c.x, c.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(120,120,120,0.75)"; ctx.fill();
+        ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.strokeStyle = "#334155"; ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 10px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("?", c.x, c.y); ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+        continue;
+      }
       // always a black outer ring so white/cream dots stay visible on light cubes;
       // completed cells get a blue dashed halo so 9/9 completion is obvious.
       ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, Math.PI * 2);

@@ -274,7 +274,7 @@ export default function HybridScanner() {
     for (let li = 0; li < lattices.length; li++) {
       const lat = lattices[li];
       // dot = detected sticker, painted its Rubik colour; learn the palette
-      type Cent = { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean };
+      type Cent = { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; occluded?: boolean };
       const cents: Cent[] = lat.centres.map((c0) => {
         // sample the WHOLE sticker quad (median over ~25 interior points), not a
         // single centre pixel — robust to glare, logos and edge noise.
@@ -368,6 +368,23 @@ export default function HybridScanner() {
         }
       }
 
+      // ---- OCCLUDED-CELL DEDUCTION: a user holds the cube, so fingers/glare hide
+      // some facelets. A cell we couldn't read but that is BRACKETED by detected
+      // stickers (inside their grid bounding box) is a real facelet under a finger →
+      // emit it as "unknown" so the face structure is complete. Off-cube cells (grid
+      // spilling onto the background) fall OUTSIDE the box and are not emitted.
+      if (lat.gridCoherent) {
+        const gxs = lat.centres.map((c) => c.gx), gys = lat.centres.map((c) => c.gy);
+        if (gxs.length) {
+          const bx0 = Math.min(...gxs), bx1 = Math.max(...gxs), by0 = Math.min(...gys), by1 = Math.max(...gys);
+          for (let gx = bx0; gx <= bx1; gx++) for (let gy = by0; gy <= by1; gy++) {
+            if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
+            const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+            cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, name: "unknown", found: true, occluded: true });
+          }
+        }
+      }
+
       for (let a = 0; a < cents.length; a++) for (let b = a + 1; b < cents.length; b++) {
         const A = cents[a], B = cents[b];
         const dgx = Math.abs(A.gx - B.gx), dgy = Math.abs(A.gy - B.gy);
@@ -380,6 +397,14 @@ export default function HybridScanner() {
       }
       ctx.setLineDash([]);
       for (const c0 of cents) {
+        if (c0.occluded) {   // grey "?" — real facelet hidden by a finger/glare
+          ctx.beginPath(); ctx.arc(c0.x, c0.y, 6, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(120,120,120,0.7)"; ctx.fill();
+          ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.strokeStyle = "#1e293b"; ctx.stroke(); ctx.setLineDash([]);
+          ctx.fillStyle = "#fff"; ctx.font = "bold 10px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.fillText("?", c0.x, c0.y); ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+          continue;
+        }
         ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
         ctx.fillStyle = colourHex(c0.name); ctx.fill();
         ctx.lineWidth = 2; ctx.strokeStyle = "#000"; ctx.stroke();   // black ring: visible on white cubes too

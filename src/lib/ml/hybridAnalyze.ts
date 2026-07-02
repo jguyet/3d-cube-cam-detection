@@ -13,7 +13,7 @@ export interface AnalyzeResult {
   edgeCount: number;   // stickers from the edge detector
   whiteCount: number;  // white stickers added by detectWhite
   lattices: FaceLattice[];
-  cells: { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; li: number }[];
+  cells: { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; occluded?: boolean; li: number }[];
   links: [Point2, Point2, boolean][];   // a,b, adjacent(true)/skip(false)
 }
 
@@ -74,11 +74,16 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
       return c === "skin" ? "white" : c;
     };
     const detRGB: [number, number, number][] = [];
-    const cur: { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; li: number }[] = lat.centres.map((c0) => {
+    const cur: { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; occluded?: boolean; li: number }[] = lat.centres.map((c0) => {
       const rgb = sampleQuadRGB(c0.corners, image.data, W, H);
       if (rgb) detRGB.push(rgb);
       return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: cellName(rgb), li };
     });
+    // detected extent: a cell INSIDE it that we can't read is a real facelet under a
+    // finger (logical deduction) — a user holds the cube, so occlusion is normal.
+    const dgx = cur.map((c) => c.gx), dgy = cur.map((c) => c.gy);
+    const bMinGx = Math.min(...dgx), bMaxGx = Math.max(...dgx), bMinGy = Math.min(...dgy), bMaxGy = Math.max(...dgy);
+    const bracketed = (gx: number, gy: number) => gx >= bMinGx && gx <= bMaxGx && gy >= bMinGy && gy <= bMaxGy;
     // On a UNIFORM face (all detected cells the same colour) a completed cell must
     // match that colour — this rejects an off-cube grid cell that landed on the
     // wall/table (which reads white-ish but is a different tone). Median ref RGB.
@@ -116,14 +121,20 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
       }
       const span = (p: { u: number; v: number }[]) => p.length ? [Math.max(...p.map((q) => q.u)) - Math.min(...p.map((q) => q.u)), Math.max(...p.map((q) => q.v)) - Math.min(...p.map((q) => q.v))] : [0, 0];
       const [wu, wv] = span(wpts);
+      let placed = false;
       if (tot > 0 && whiteN / tot >= 0.5 && wu >= 0.6 * (hi - lo) && wv >= 0.6 * (hi - lo)) {
-        cur.push({ x: mid.x, y: mid.y, gx, gy, name: "white", found: true, li });
+        cur.push({ x: mid.x, y: mid.y, gx, gy, name: "white", found: true, li }); placed = true;
       } else if (opts.findMissing) {
         let bestC = "", bestN = 0; for (const k in votes) if (votes[k] > bestN) { bestN = votes[k]; bestC = k; }
         const [su, sv] = span(uv[bestC] ?? []);
         if (tot > 0 && bestN / tot >= 0.45 && su >= 0.6 * (hi - lo) && sv >= 0.6 * (hi - lo)) {
-          cur.push({ x: mid.x, y: mid.y, gx, gy, name: bestC as CubeColour, found: true, li });
+          cur.push({ x: mid.x, y: mid.y, gx, gy, name: bestC as CubeColour, found: true, li }); placed = true;
         }
+      }
+      // couldn't read a cube colour, but the cell is bracketed by detected stickers
+      // → it's a real facelet hidden by a finger/glare: emit as unknown (occluded).
+      if (!placed && bracketed(gx, gy)) {
+        cur.push({ x: mid.x, y: mid.y, gx, gy, name: "unknown", found: true, occluded: true, li });
       }
     }
     // links between grid-adjacent cells
