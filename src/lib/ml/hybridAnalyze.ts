@@ -66,9 +66,16 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
   const links: AnalyzeResult["links"] = [];
   for (let li = 0; li < lattices.length; li++) {
     const lat = lattices[li];
+    // "skin" is not a cube colour, so a skin/tan reading on a FACE-GRID cell is a
+    // white facelet under warm lighting (a finger can't form a 3×3) → map to white.
+    const cellName = (rgb: [number, number, number] | null): CubeColour => {
+      if (!rgb) return "unknown";
+      const c = mem.classify(rgb);
+      return c === "skin" ? "white" : c;
+    };
     const cur: { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; li: number }[] = lat.centres.map((c0) => {
       const rgb = sampleQuadRGB(c0.corners, image.data, W, H);
-      return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: (rgb ? mem.classify(rgb) : "unknown") as CubeColour, li };
+      return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: cellName(rgb), li };
     });
     // completion ONLY on a coherent (non-degenerate) grid — a collapsed homography
     // would stack all completed cells on one point.

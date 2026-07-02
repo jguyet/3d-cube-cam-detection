@@ -280,7 +280,11 @@ export default function HybridScanner() {
         // single centre pixel — robust to glare, logos and edge noise.
         const rgb = sampleQuadRGB(c0.corners, image.data, W, H);
         if (rgb && mem) mem.learn(rgb);
-        return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: (rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown") as CubeColour };
+        // "skin" is not a cube colour: a skin/tan reading on a face-grid cell is a
+        // white facelet under warm lighting → map to white.
+        let nm: CubeColour = rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown";
+        if (nm === "skin") nm = "white";
+        return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: nm };
       });
 
       // ---- MISSING-STICKER SEARCH: for each empty grid cell, vote over sampled
