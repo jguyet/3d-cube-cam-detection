@@ -5,7 +5,7 @@
 import { ShapeDetector, type Shape } from "@/lib/rubik-detector/core/ShapeDetector";
 import type { Point2 } from "@/lib/rubik-detector/types";
 import { faceLatticesFromStickers, type FaceLattice } from "@/lib/ml/cubePoseFromStickers";
-import { sampleQuadRGB, classifyColour, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
+import { sampleQuadRGB, darkFraction, classifyColour, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 
 export interface AnalyzeOpts { findMissing?: boolean }
 export interface AnalyzeResult {
@@ -36,6 +36,9 @@ export function detectStickers(det: ShapeDetector, image: ImageData): { shapes: 
     if (ref > 0) { const r = side / ref; if (r < 0.55 || r > 1.8) continue; }
     shapes.push(wsh); whiteCount++;
   }
+  // BLACK gate: a real facelet has NO black inside — a quad containing black
+  // straddles the plastic gap or is a false positive (no black facelets exist).
+  shapes = shapes.filter((s) => darkFraction(s.corners, image.data, W, H) <= 0.2);
   // size gate (same-size prior)
   if (shapes.length >= 5) {
     const sd = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
@@ -100,6 +103,8 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
     if (lat.gridCoherent) for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
       if (lat.filled[gx][gy] || cur.some((c) => c.gx === gx && c.gy === gy)) continue;
       const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+      // BLACK = not a facelet: skip a cell whose footprint contains black (gap/off-cube).
+      if (darkFraction([A, B, C, D], image.data, W, H) > 0.2) continue;
       const mid0 = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
       if (rgbFar(sampleQuadRGB([{ x: mid0.x - 3, y: mid0.y - 3 }, { x: mid0.x + 3, y: mid0.y - 3 }, { x: mid0.x + 3, y: mid0.y + 3 }, { x: mid0.x - 3, y: mid0.y + 3 }], image.data, W, H))) continue;   // off-cube tone on a uniform face
       const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };

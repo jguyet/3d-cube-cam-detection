@@ -5,7 +5,7 @@ import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector, type Shape } from "@/lib/rubik-detector/core/ShapeDetector";
 import { faceLatticesFromStickers, cubeFromLattice, CUBE_EDGES, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
-import { sampleQuadRGB, classifyColour, colourHex, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
+import { sampleQuadRGB, darkFraction, classifyColour, colourHex, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 import { stabiliseZone, type Zone } from "@/lib/ml/temporalStabilise";
 import { ShapeMemory } from "@/lib/ml/shapeMemory";
 import type { Point2 } from "@/lib/rubik-detector/types";
@@ -200,11 +200,13 @@ export default function HybridScanner() {
       }
     }
 
-    // ---- COLOUR GATE: drop quads whose interior is SKIN (beige/brown finger) or
-    // DARK (black / dark-brown = hair or deep shadow) — neither is a lit sticker
-    // (user's idea). Cleans the links of non-cube quads.
+    // ---- COLOUR GATE: drop quads whose interior is SKIN (finger), DARK, or that
+    // CONTAIN BLACK. A real facelet is a solid cube colour with NO black inside —
+    // any black means the quad straddles the plastic gap or is a false positive
+    // (there are no black facelets). Black = not good, everywhere.
     let nSkin = 0;
     shapes = shapes.filter((s) => {
+      if (darkFraction(s.corners, image.data, W, H) > 0.2) { nSkin++; return false; }
       const rgb = sampleQuadRGB(s.corners, image.data, W, H);
       if (rgb) { const c = classifyColour(rgb); if (c === "skin" || c === "dark") { nSkin++; return false; } }
       return true;
@@ -337,6 +339,7 @@ export default function HybridScanner() {
         for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
           if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
           const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+          if (darkFraction([A, B, C, D], image.data, W, H) > 0.2) continue;   // black inside = gap/off-cube, not a facelet
           const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
           if (mid.x < rx0 || mid.x > rx1 || mid.y < ry0 || mid.y > ry1) continue;   // must be inside the operating zone
           const votes: Record<string, number> = {}; let tot = 0;
@@ -380,6 +383,7 @@ export default function HybridScanner() {
         for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
           if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
           const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+          if (darkFraction([A, B, C, D], image.data, W, H) > 0.2) continue;   // black inside = gap/off-cube, not a facelet
           const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
           if (mid.x < rx0 || mid.x > rx1 || mid.y < ry0 || mid.y > ry1) continue;
           let whiteN = 0, tot = 0; const wpts: { u: number; v: number }[] = [];
@@ -420,6 +424,8 @@ export default function HybridScanner() {
           for (let gx = bx0; gx <= bx1; gx++) for (let gy = by0; gy <= by1; gy++) {
             if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
             const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+            if (darkFraction([A, B, C, D], image.data, W, H) > 0.2) continue;   // black = gap, not an occluded facelet
+          if (darkFraction([A, B, C, D], image.data, W, H) > 0.2) continue;   // black inside = gap/off-cube, not a facelet
             const rec = remembered?.cells[gy * 3 + gx];
             const useRec = rec && rec !== "unknown";
             cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, name: useRec ? rec : "unknown", found: true, occluded: true, remembered: useRec });

@@ -35,6 +35,24 @@ export function sampleQuadRGB(q: readonly Pt[], data: Uint8ClampedArray, W: numb
   return nr.length >= 3 ? [med(nr), med(ng), med(nb)] : [med(rs), med(gs), med(bs)];
 }
 
+// Fraction of a quad's interior that is BLACK/very dark. A real facelet is a solid
+// cube colour with ~zero dark pixels; a quad that straddles the dark plastic gap or
+// is a false positive contains black → reject it (there are no black facelets).
+export function darkFraction(q: readonly Pt[], data: Uint8ClampedArray, W: number, H: number): number {
+  if (q.length < 4) return 0;
+  const [A, B, C, D] = q;
+  let dark = 0, n = 0;
+  for (let u = 0.2; u <= 0.85; u += 0.13) for (let v = 0.2; v <= 0.85; v += 0.13) {
+    const x = Math.round((1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x);
+    const y = Math.round((1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y);
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const i = (y * W + x) * 4;
+    if (Math.max(data[i], data[i + 1], data[i + 2]) < 55) dark++;
+    n++;
+  }
+  return n > 0 ? dark / n : 0;
+}
+
 function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   r /= 255; g /= 255; b /= 255;
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
