@@ -13,7 +13,8 @@ const HEX: Record<CubeColour, string> = {
 export const colourHex = (c: CubeColour) => HEX[c];
 
 // median RGB over an interior grid of a quad (TL,TR,BR,BL), robust to a stray edge
-export function sampleQuadRGB(q: [Pt, Pt, Pt, Pt], data: Uint8ClampedArray, W: number, H: number): [number, number, number] | null {
+export function sampleQuadRGB(q: readonly Pt[], data: Uint8ClampedArray, W: number, H: number): [number, number, number] | null {
+  if (q.length < 4) return null;
   const rs: number[] = [], gs: number[] = [], bs: number[] = [];
   const [A, B, C, D] = q;
   for (let u = 0.25; u <= 0.8; u += 0.11) for (let v = 0.25; v <= 0.8; v += 0.11) {
