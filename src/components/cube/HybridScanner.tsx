@@ -283,10 +283,15 @@ export default function HybridScanner() {
     // side by side and don't overlap, so this only removes the spurious duplicates.
     const cxy = (s: Point2[]) => ({ x: (s[0].x + s[1].x + s[2].x + s[3].x) / 4, y: (s[0].y + s[1].y + s[2].y + s[3].y) / 4 });
     const diag = (s: Point2[]) => Math.hypot(s[2].x - s[0].x, s[2].y - s[0].y);
+    // grid-axis direction (mod 180) → two overlapping groups on the SAME plane have
+    // ~equal axes (spurious split → merge); two edge-on faces overlap in 2D but have
+    // very different axes (large FOLD angle → keep both). Fixes wrong-merging.
+    const uAxis = (l: (typeof allLat)[0]) => { const a = Math.atan2(l.nodes[3][0].y - l.nodes[0][0].y, l.nodes[3][0].x - l.nodes[0][0].x) * 180 / Math.PI; return ((a % 180) + 180) % 180; };
+    const foldSmall = (a: number, b: number) => { const d = Math.abs(a - b) % 180; return Math.min(d, 180 - d) < 22; };
     const lattices: typeof allLat = [];
     for (const lat of [...allLat].sort((a, b) => b.count - a.count)) {
-      const c = cxy(lat.surface), sz = diag(lat.surface);
-      if (lattices.some((o) => Math.hypot(cxy(o.surface).x - c.x, cxy(o.surface).y - c.y) < 0.5 * Math.max(sz, diag(o.surface)))) continue;
+      const c = cxy(lat.surface), sz = diag(lat.surface), ax = uAxis(lat);
+      if (lattices.some((o) => Math.hypot(cxy(o.surface).x - c.x, cxy(o.surface).y - c.y) < 0.5 * Math.max(sz, diag(o.surface)) && foldSmall(ax, uAxis(o)))) continue;
       lattices.push(lat);
     }
     // LEARN the sticker shape profile from stickers CONFIRMED in a coherent grid

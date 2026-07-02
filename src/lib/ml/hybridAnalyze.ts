@@ -52,10 +52,12 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
   // dedupe over-segmented faces (overlapping surfaces)
   const cxy = (s: Point2[]) => ({ x: (s[0].x + s[1].x + s[2].x + s[3].x) / 4, y: (s[0].y + s[1].y + s[2].y + s[3].y) / 4 });
   const diag = (s: Point2[]) => Math.hypot(s[2].x - s[0].x, s[2].y - s[0].y);
+  const uAxis = (l: FaceLattice) => { const a = Math.atan2(l.nodes[3][0].y - l.nodes[0][0].y, l.nodes[3][0].x - l.nodes[0][0].x) * 180 / Math.PI; return ((a % 180) + 180) % 180; };
+  const foldSmall = (a: number, b: number) => { const d = Math.abs(a - b) % 180; return Math.min(d, 180 - d) < 22; };
   const lattices: FaceLattice[] = [];
   for (const lat of [...all].sort((a, b) => b.count - a.count)) {
-    const c = cxy(lat.surface), sz = diag(lat.surface);
-    if (lattices.some((o) => Math.hypot(cxy(o.surface).x - c.x, cxy(o.surface).y - c.y) < 0.5 * Math.max(sz, diag(o.surface)))) continue;
+    const c = cxy(lat.surface), sz = diag(lat.surface), ax = uAxis(lat);
+    if (lattices.some((o) => Math.hypot(cxy(o.surface).x - c.x, cxy(o.surface).y - c.y) < 0.5 * Math.max(sz, diag(o.surface)) && foldSmall(ax, uAxis(o)))) continue;
     lattices.push(lat);
   }
   // learn a palette from this image's detected stickers

@@ -12,21 +12,27 @@ const HEX: Record<CubeColour, string> = {
 };
 export const colourHex = (c: CubeColour) => HEX[c];
 
-// median RGB over an interior grid of a quad (TL,TR,BR,BL), robust to a stray edge
+// median RGB over an interior grid of a quad (TL,TR,BR,BL), robust to a stray edge.
+// EXCLUDES specular highlights (high value + low saturation = glare, not surface
+// colour) so a red facelet with a glare spot doesn't read pink/white — glare pulls
+// every classifier. Falls back to the full set if too few non-specular samples.
 export function sampleQuadRGB(q: readonly Pt[], data: Uint8ClampedArray, W: number, H: number): [number, number, number] | null {
   if (q.length < 4) return null;
   const rs: number[] = [], gs: number[] = [], bs: number[] = [];
+  const nr: number[] = [], ng: number[] = [], nb: number[] = [];   // non-specular subset
   const [A, B, C, D] = q;
   for (let u = 0.25; u <= 0.8; u += 0.11) for (let v = 0.25; v <= 0.8; v += 0.11) {
     const x = Math.round((1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x);
     const y = Math.round((1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y);
     if (x < 0 || y < 0 || x >= W || y >= H) continue;
-    const i = (y * W + x) * 4;
-    rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]);
+    const i = (y * W + x) * 4, r = data[i], g = data[i + 1], b = data[i + 2];
+    rs.push(r); gs.push(g); bs.push(b);
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), sat = mx > 0 ? (mx - mn) / mx : 0;
+    if (!(mx > 235 && sat < 0.12)) { nr.push(r); ng.push(g); nb.push(b); }   // drop blown specular
   }
   if (rs.length < 3) return null;
   const med = (a: number[]) => { a.sort((x, y) => x - y); return a[a.length >> 1]; };
-  return [med(rs), med(gs), med(bs)];
+  return nr.length >= 3 ? [med(nr), med(ng), med(nb)] : [med(rs), med(gs), med(bs)];
 }
 
 function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
@@ -104,6 +110,10 @@ export class ColourMemory {
       const d = Math.hypot(cr - rr, cg - rg);
       if (d < bd) { bd = d; best = name; }
     }
+    // CLOSED-SET: once all 6 colours are learned, a real facelet can ONLY be one of
+    // them → snap to the nearest learned centroid with no tolerance gate (kills
+    // misreads to the fixed HSV bins, esp. red↔orange). Before that, gate by tol.
+    if (best && this.ready() >= 6) return best;
     return best && bd < this.tol ? best : fixed;
   }
 
