@@ -269,6 +269,37 @@ const GAP = 0.12;
 // ALIGNMENT + distance range (gap-agnostic) rather than rounding to exactly 1.
 const UNIT_CELL: Point2[] = [{ x: -0.5, y: -0.5 }, { x: 0.5, y: -0.5 }, { x: 0.5, y: 0.5 }, { x: -0.5, y: 0.5 }];
 
+// FRONTAL/SIMILARITY grid fit (user's insight: on a face the sticker spacing is
+// regular — strictly equal frontal, smoothly-varying at an angle). Assume SQUARE
+// cells: image(X,Y) = O + X·u + Y·v with v ⟂ u and |v|=|u|. That's 4 unknowns
+// (Ox,Oy,a,b where u=(a,b), v=(-b,a)), solvable from just 2 stickers and — unlike a
+// full homography — NEVER degenerate on a collinear/clustered set (a single column
+// still fixes the pitch vector). Correct for near-frontal faces (cubes on a table).
+// Returns a 3×3 affine matrix compatible with applyH.
+function fitFrontalGrid(stickers: FaceSticker[]): Mat | null {
+  if (stickers.length < 2) return null;
+  // normal equations for [Ox,Oy,a,b] over eqs: Ox + a·X − b·Y = cx ; Oy + a·Y + b·X = cy
+  const A = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const g = [0, 0, 0, 0];
+  const addRow = (r: number[], y: number) => { for (let i = 0; i < 4; i++) { for (let j = 0; j < 4; j++) A[i][j] += r[i] * r[j]; g[i] += r[i] * y; } };
+  for (const st of stickers) {
+    const X = st.gx + 0.5, Y = st.gy + 0.5, c = st.shape.center;
+    addRow([1, 0, X, -Y], c.x);   // Ox·1 + Oy·0 + a·X + b·(−Y) = cx
+    addRow([0, 1, Y, X], c.y);    // Ox·0 + Oy·1 + a·Y + b·X   = cy
+  }
+  // solve 4×4 (Gaussian elimination with partial pivot)
+  const M = A.map((row, i) => [...row, g[i]]);
+  for (let col = 0; col < 4; col++) {
+    let piv = col; for (let r = col + 1; r < 4; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+    if (Math.abs(M[piv][col]) < 1e-9) return null;
+    [M[col], M[piv]] = [M[piv], M[col]];
+    for (let r = 0; r < 4; r++) { if (r === col) continue; const f = M[r][col] / M[col][col]; for (let k = col; k <= 4; k++) M[r][k] -= f * M[col][k]; }
+  }
+  const Ox = M[0][4] / M[0][0], Oy = M[1][4] / M[1][1], a = M[2][4] / M[2][2], b = M[3][4] / M[3][3];
+  if (!isFinite(a) || !isFinite(b) || Math.hypot(a, b) < 1e-6) return null;
+  return [[a, -b, Ox], [b, a, Oy], [0, 0, 1]];   // applyH(M,{X,Y}) = O + X·(a,b) + Y·(−b,a)
+}
+
 // Fit a face's grid->image homography. CENTRES-ONLY when >=4 stickers span both
 // axes (Design 3): a centre maps exactly to (gx+0.5,gy+0.5) independent of the
 // gap, so the fit is the exact projective map with zero gap bias. For sparse /
@@ -598,7 +629,20 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
   try {
     const faces = extractFacesV2(shapes);
     return faces.map((f) => {
-      const nodes = [0, 1, 2, 3].map((u) => [0, 1, 2, 3].map((v) => applyH(f.H, { x: u, y: v })));
+      // If the projective grid is DEGENERATE (collinear/clustered stickers collapse
+      // one axis), refit a FRONTAL similarity grid (regular equal spacing) — robust
+      // to collinearity and correct for near-frontal faces.
+      let H = f.H;
+      {
+        const n = [0, 3].map((u) => [0, 3].map((v) => applyH(H, { x: u, y: v })));
+        const sX = Math.hypot(n[1][0].x - n[0][0].x, n[1][0].y - n[0][0].y);
+        const sY = Math.hypot(n[0][1].x - n[0][0].x, n[0][1].y - n[0][0].y);
+        if (!(sX > 1e-3 && sY > 1e-3 && sX / sY <= 3 && sY / sX <= 3)) {
+          const Hfrontal = fitFrontalGrid(f.stickers);
+          if (Hfrontal) H = Hfrontal;
+        }
+      }
+      const nodes = [0, 1, 2, 3].map((u) => [0, 1, 2, 3].map((v) => applyH(H, { x: u, y: v })));
       const filled = [0, 1, 2].map(() => [false, false, false]);
       const centres: FaceLattice["centres"] = [];
       for (const st of f.stickers) {
@@ -608,8 +652,8 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
         centres.push({ x: c.x, y: c.y, gx: st.gx, gy: st.gy, corners: st.shape.corners });
       }
       // MEASURE PROPORTIONS: one grid unit (cell pitch) in px vs the sticker side.
-      const O = applyH(f.H, { x: 1, y: 1 });
-      const pu = applyH(f.H, { x: 2, y: 1 }), pv = applyH(f.H, { x: 1, y: 2 });
+      const O = applyH(H, { x: 1, y: 1 });
+      const pu = applyH(H, { x: 2, y: 1 }), pv = applyH(H, { x: 1, y: 2 });
       const pitch = (Math.hypot(pu.x - O.x, pu.y - O.y) + Math.hypot(pv.x - O.x, pv.y - O.y)) / 2 || 1;
       const sides = f.stickers.map((st) => {
         const c = st.shape.corners;
