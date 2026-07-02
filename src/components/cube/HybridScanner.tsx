@@ -51,6 +51,9 @@ export default function HybridScanner() {
   const [showContour, setShowContour] = useState(false);    // exact cube-surface contour sensor
   const contourRef = useRef(false);
   contourRef.current = showContour;
+  const [findMissing, setFindMissing] = useState(false);    // search empty cells for (partial) stickers
+  const findMissingRef = useRef(false);
+  findMissingRef.current = findMissing;
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -222,9 +225,46 @@ export default function HybridScanner() {
       if (lattices.some((o) => Math.hypot(cxy(o.surface).x - c.x, cxy(o.surface).y - c.y) < 0.5 * Math.max(sz, diag(o.surface)))) continue;
       lattices.push(lat);
     }
-    let nLinks = 0;
+    let nLinks = 0, nFound = 0;
+    const mem = memRef.current;
     for (const lat of lattices) {
-      const cents = lat.centres;
+      // dot = detected sticker, painted its Rubik colour; learn the palette
+      type Cent = { x: number; y: number; gx: number; gy: number; colour: string; found?: boolean };
+      const cents: Cent[] = lat.centres.map((c0) => {
+        const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
+        if (rgb && mem) mem.learn(rgb);
+        return { ...c0, colour: colourHex(rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown") };
+      });
+
+      // ---- MISSING-STICKER SEARCH: for each empty grid cell, vote over sampled
+      // pixels; accept a (possibly PARTIAL) sticker if a LEARNED cube colour wins
+      // enough of the votes. The learned palette is the discriminator — skin, hair
+      // and background don't match a cube colour, so this stays clean.
+      if (findMissingRef.current) {
+        for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
+          if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
+          const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+          const votes: Record<string, number> = {}; let tot = 0;
+          for (let u = 0.18; u <= 0.85; u += 0.16) for (let v = 0.18; v <= 0.85; v += 0.16) {
+            const x = (1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x;
+            const y = (1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y;
+            const rgb = sampleQuadRGB([{ x: x - 2, y: y - 2 }, { x: x + 2, y: y - 2 }, { x: x + 2, y: y + 2 }, { x: x - 2, y: y + 2 }], image.data, W, H);
+            if (!rgb) continue;
+            tot++;
+            const c = mem ? mem.classify(rgb) : classifyColour(rgb);
+            if (c === "skin" || c === "dark" || c === "unknown") continue;   // not a cube colour
+            if (mem && mem.ready() >= 3 && !mem.refs[c as keyof typeof mem.refs]) continue;   // only LEARNED colours
+            votes[c] = (votes[c] || 0) + 1;
+          }
+          let bestC = "", bestN = 0;
+          for (const k in votes) if (votes[k] > bestN) { bestN = votes[k]; bestC = k; }
+          if (tot > 0 && bestN / tot >= 0.34) {          // partial acceptance
+            cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, colour: colourHex(bestC as never), found: true });
+            nFound++;
+          }
+        }
+      }
+
       for (let a = 0; a < cents.length; a++) for (let b = a + 1; b < cents.length; b++) {
         const A = cents[a], B = cents[b];
         const dgx = Math.abs(A.gx - B.gx), dgy = Math.abs(A.gy - B.gy);
@@ -236,14 +276,12 @@ export default function HybridScanner() {
         ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); nLinks++;
       }
       ctx.setLineDash([]);
-      const mem = memRef.current;
-      for (const c0 of cents) {   // dot = detected sticker, painted its Rubik colour
-        const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
-        if (rgb && mem) mem.learn(rgb);                                    // remember this cube's colours
-        const col = rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown";
+      for (const c0 of cents) {
         ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = colourHex(col); ctx.fill();
-        ctx.lineWidth = 1.5; ctx.strokeStyle = "#000"; ctx.stroke();
+        ctx.fillStyle = c0.colour; ctx.fill();
+        ctx.lineWidth = c0.found ? 2 : 1.5;
+        ctx.strokeStyle = c0.found ? "#ffffff" : "#000";   // white ring = found in an empty cell
+        ctx.stroke();
       }
       if (showLatticeRef.current) {   // optional extrapolated 3×3 grid (off by default)
         ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,140,0,0.7)";
@@ -324,7 +362,7 @@ export default function HybridScanner() {
     ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 300, 24);
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
     const pal = memRef.current ? memRef.current.ready() : 0;
-    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers · palette ${pal}/6${nSkin ? ` · ${nSkin} peau` : ""}${nSize ? ` · ${nSize} hors-taille` : ""}`, 14, 25);
+    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers${nFound ? `+${nFound}` : ""} · palette ${pal}/6${nSkin ? ` · ${nSkin} peau` : ""}`, 14, 25);
   };
 
   const start = async () => {
@@ -388,6 +426,9 @@ export default function HybridScanner() {
         </label>
         <label className="flex items-center gap-2 text-sm font-medium text-fuchsia-600 dark:text-fuchsia-400">
           <input type="checkbox" checked={showContour} onChange={(e) => setShowContour(e.target.checked)} /> contour exact du cube
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+          <input type="checkbox" checked={findMissing} onChange={(e) => setFindMissing(e.target.checked)} /> chercher étiquettes manquantes
         </label>
         <button onClick={() => { try { localStorage.removeItem("rubix-palette"); } catch { } if (memRef.current) memRef.current.refs = {}; }}
           className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">
