@@ -241,11 +241,19 @@ export default function HybridScanner() {
       // enough of the votes. The learned palette is the discriminator — skin, hair
       // and background don't match a cube colour, so this stays clean.
       if (findMissingRef.current) {
+        // Sample ONLY the established sticker footprint (centred, sized by the face's
+        // measured stickerFrac) — NOT the whole cell — so we test the sticker area
+        // like the detected ones, never the gaps or off-cube margins. lo..hi is the
+        // sticker's extent within the cell in [0,1].
+        const half = Math.max(0.18, 0.5 * lat.stickerFrac * 0.9);
+        const lo = 0.5 - half, hi = 0.5 + half, step = (hi - lo) / 4;
         for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
           if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
           const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+          const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
+          if (mid.x < rx0 || mid.x > rx1 || mid.y < ry0 || mid.y > ry1) continue;   // must be inside the operating zone
           const votes: Record<string, number> = {}; let tot = 0;
-          for (let u = 0.18; u <= 0.85; u += 0.16) for (let v = 0.18; v <= 0.85; v += 0.16) {
+          for (let u = lo; u <= hi + 1e-6; u += step) for (let v = lo; v <= hi + 1e-6; v += step) {
             const x = (1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x;
             const y = (1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y;
             const rgb = sampleQuadRGB([{ x: x - 2, y: y - 2 }, { x: x + 2, y: y - 2 }, { x: x + 2, y: y + 2 }, { x: x - 2, y: y + 2 }], image.data, W, H);
@@ -258,8 +266,8 @@ export default function HybridScanner() {
           }
           let bestC = "", bestN = 0;
           for (const k in votes) if (votes[k] > bestN) { bestN = votes[k]; bestC = k; }
-          if (tot > 0 && bestN / tot >= 0.34) {          // partial acceptance
-            cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, colour: colourHex(bestC as never), found: true });
+          if (tot > 0 && bestN / tot >= 0.4) {           // partial acceptance on the sticker footprint
+            cents.push({ x: mid.x, y: mid.y, gx, gy, colour: colourHex(bestC as never), found: true });
             nFound++;
           }
         }
@@ -294,6 +302,10 @@ export default function HybridScanner() {
       // sticker proportions) out to the physical cube edge → the exact border.
       if (contourRef.current) {
         const sf = lat.surface;
+        // sanity: skip if the surface fell outside the operating zone (bad face fit)
+        const margin = 0.6 * (rx1 - rx0);
+        const outside = sf.some((p) => p.x < rx0 - margin || p.x > rx1 + margin || p.y < ry0 - margin || p.y > ry1 + margin);
+        if (outside) continue;
         ctx.fillStyle = "rgba(255,0,200,0.10)";
         ctx.beginPath(); sf.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath(); ctx.fill();
         ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,0,200,0.95)"; ctx.stroke();

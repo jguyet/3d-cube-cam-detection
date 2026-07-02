@@ -614,14 +614,17 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
       }).sort((a, b) => a - b);
       const sSide = sides[sides.length >> 1] || pitch;
       const stickerFrac = Math.max(0.5, Math.min(0.98, sSide / pitch));
-      // The face spans grid [0,3]; the physical cube edge sits beyond the outer
-      // stickers by ~half the gap (node→sticker) plus the plastic frame border.
+      // The physical cube edge sits beyond the outer stickers by ~half the gap plus
+      // the plastic frame border. EXPAND the face quad about its centroid rather
+      // than extrapolating the homography to grid [-m,3+m] — projective extrapolation
+      // DIVERGES toward the vanishing line under strong perspective (contour shooting
+      // off to infinity). Centroid expansion is bounded and stable.
       const gap = 1 - stickerFrac;
       const m = Math.min(0.6, gap * 0.5 + 0.12);
-      const surface: [Point2, Point2, Point2, Point2] = [
-        applyH(f.H, { x: -m, y: -m }), applyH(f.H, { x: 3 + m, y: -m }),
-        applyH(f.H, { x: 3 + m, y: 3 + m }), applyH(f.H, { x: -m, y: 3 + m }),
-      ];
+      const scale = (3 + 2 * m) / 3;
+      const fc = [nodes[0][0], nodes[3][0], nodes[3][3], nodes[0][3]];
+      const ctr = { x: (fc[0].x + fc[1].x + fc[2].x + fc[3].x) / 4, y: (fc[0].y + fc[1].y + fc[2].y + fc[3].y) / 4 };
+      const surface = fc.map((p) => ({ x: ctr.x + (p.x - ctr.x) * scale, y: ctr.y + (p.y - ctr.y) * scale })) as [Point2, Point2, Point2, Point2];
       return { nodes, filled, centres, count: f.stickers.length, stickerFrac, surface };
     });
   } catch { return []; }
