@@ -5,7 +5,7 @@ import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
-import { sampleQuadRGB, classifyColour, colourHex, ColourMemory } from "@/lib/ml/stickerColor";
+import { sampleQuadRGB, classifyColour, colourHex, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -26,6 +26,9 @@ export default function HybridScanner() {
   const cropRef = useRef<HTMLCanvasElement | null>(null);   // high-res zone crop
   const memRef = useRef<ColourMemory | null>(null);         // learned cube palette
   const frameRef = useRef(0);
+  const lastFaceRef = useRef<{ center: CubeColour; cells: CubeColour[]; known: number } | null>(null);
+  // accumulated cube state: 6 faces keyed by centre colour → their 9 facelets
+  const [cubeState, setCubeState] = useState<Record<string, CubeColour[]>>({});
   const poseRef = useRef<{ q: Quat; t: number[]; k: number[] } | null>(null);   // filtered 3D pose (k=[f,fy,cx,cy,s])
   // sticker HISTORY across frames: recently-seen stickers persist a few frames so
   // the links don't flicker with per-frame detection dropouts
@@ -227,13 +230,14 @@ export default function HybridScanner() {
     }
     let nLinks = 0, nFound = 0;
     const mem = memRef.current;
-    for (const lat of lattices) {
+    for (let li = 0; li < lattices.length; li++) {
+      const lat = lattices[li];
       // dot = detected sticker, painted its Rubik colour; learn the palette
-      type Cent = { x: number; y: number; gx: number; gy: number; colour: string; found?: boolean };
+      type Cent = { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean };
       const cents: Cent[] = lat.centres.map((c0) => {
         const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
         if (rgb && mem) mem.learn(rgb);
-        return { ...c0, colour: colourHex(rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown") };
+        return { ...c0, name: (rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown") as CubeColour };
       });
 
       // ---- MISSING-STICKER SEARCH: for each empty grid cell, vote over sampled
@@ -267,7 +271,7 @@ export default function HybridScanner() {
           let bestC = "", bestN = 0;
           for (const k in votes) if (votes[k] > bestN) { bestN = votes[k]; bestC = k; }
           if (tot > 0 && bestN / tot >= 0.4) {           // partial acceptance on the sticker footprint
-            cents.push({ x: mid.x, y: mid.y, gx, gy, colour: colourHex(bestC as never), found: true });
+            cents.push({ x: mid.x, y: mid.y, gx, gy, name: bestC as CubeColour, found: true });
             nFound++;
           }
         }
@@ -286,10 +290,17 @@ export default function HybridScanner() {
       ctx.setLineDash([]);
       for (const c0 of cents) {
         ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = c0.colour; ctx.fill();
+        ctx.fillStyle = colourHex(c0.name); ctx.fill();
         ctx.lineWidth = c0.found ? 2 : 1.5;
         ctx.strokeStyle = c0.found ? "#ffffff" : "#000";   // white ring = found in an empty cell
         ctx.stroke();
+      }
+      // dominant face (li===0): expose its 9-cell readout for capture/validation
+      if (li === 0) {
+        const cells: CubeColour[] = Array(9).fill("unknown");
+        for (const c0 of cents) cells[c0.gy * 3 + c0.gx] = c0.name;
+        const known = cells.filter((c) => c !== "unknown").length;
+        lastFaceRef.current = { center: cells[4], cells, known };
       }
       if (showLatticeRef.current) {   // optional extrapolated 3×3 grid (off by default)
         ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,140,0,0.7)";
@@ -400,6 +411,29 @@ export default function HybridScanner() {
 
   const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; setStatus("idle"); };
 
+  // capture the currently visible dominant face into the cube state, keyed by its
+  // centre colour (the centre identifies the face). Merges with any prior read of
+  // the same face, filling unknown cells.
+  const captureFace = () => {
+    const f = lastFaceRef.current;
+    if (!f || f.center === "unknown" || f.known < 5) return;
+    setCubeState((prev) => {
+      const existing = prev[f.center];
+      const merged = f.cells.map((c, i) => (c !== "unknown" ? c : (existing?.[i] ?? "unknown")));
+      return { ...prev, [f.center]: merged };
+    });
+  };
+  const resetScan = () => setCubeState({});
+
+  // ---- COUNT VALIDATION: a real cube has exactly 9 of each colour and 6 distinct
+  // centres. Tally the captured faces and flag impossibilities → catches misreads.
+  const TALLY: CubeColour[] = ["white", "yellow", "red", "orange", "green", "blue"];
+  const counts: Record<string, number> = Object.fromEntries(TALLY.map((c) => [c, 0]));
+  let total = 0;
+  for (const cells of Object.values(cubeState)) for (const c of cells) if (c in counts) { counts[c]++; total++; }
+  const over = TALLY.filter((c) => counts[c] > 9);
+  const faces = Object.keys(cubeState).length;
+
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
       <div className="mb-3 text-sm">
@@ -447,9 +481,42 @@ export default function HybridScanner() {
           oublier la palette
         </button>
       </div>
+
+      {/* ---- CUBE STATE + COUNT VALIDATION ---- */}
+      <div className="mt-4 rounded-xl bg-slate-100 p-4 ring-1 ring-slate-200 dark:bg-slate-800/60 dark:ring-slate-700">
+        <div className="flex flex-wrap items-center gap-3">
+          <button onClick={captureFace} disabled={status !== "scanning"}
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">
+            capturer la face
+          </button>
+          <button onClick={resetScan} className="rounded-lg bg-slate-200 px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">
+            réinitialiser le scan
+          </button>
+          <span className="text-sm text-slate-600 dark:text-slate-400">faces <strong>{faces}/6</strong> · facettes <strong>{total}/54</strong></span>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {TALLY.map((c) => (
+            <span key={c} className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-sm ring-1 ${counts[c] > 9 ? "bg-red-100 text-red-800 ring-red-300 dark:bg-red-950/50 dark:text-red-300" : "bg-white text-slate-700 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700"}`}>
+              <span className="inline-block h-3 w-3 rounded-sm ring-1 ring-black/20" style={{ backgroundColor: colourHex(c) }} />
+              {counts[c]}/9
+            </span>
+          ))}
+        </div>
+        {over.length > 0 && (
+          <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700 ring-1 ring-red-200 dark:bg-red-950/40 dark:text-red-300 dark:ring-red-900">
+            ⚠ Erreur de lecture : trop de {over.join(", ")} (&gt; 9). Recapture la/les faces concernées.
+          </p>
+        )}
+        {faces === 6 && over.length === 0 && total === 54 && TALLY.every((c) => counts[c] === 9) && (
+          <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900">
+            ✓ Cube complet et cohérent : 6 faces, 9 de chaque couleur.
+          </p>
+        )}
+      </div>
+
       <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-        Test hybride : le ML (iter4) localise la <strong>zone</strong> du cube, puis la <strong>silhouette classique</strong>
-        (contour orange) est calée sur les vrais bords du cube dans cette zone. Objectif : coins précis au pixel.
+        Montre une face au cube, puis <strong>capturer la face</strong> ; tourne le cube et recommence pour les 6 faces.
+        La palette apprise fiabilise rouge/orange ; le comptage valide qu&apos;il y a bien 9 de chaque couleur et 6 centres.
       </p>
     </div>
   );
