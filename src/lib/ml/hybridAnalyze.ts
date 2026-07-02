@@ -10,27 +10,31 @@ import { sampleQuadRGB, classifyColour, ColourMemory, type CubeColour } from "@/
 export interface AnalyzeOpts { findMissing?: boolean }
 export interface AnalyzeResult {
   shapes: Shape[];
+  edgeCount: number;   // stickers from the edge detector
+  whiteCount: number;  // white stickers added by detectWhite
   lattices: FaceLattice[];
   cells: { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; li: number }[];
   links: [Point2, Point2, boolean][];   // a,b, adjacent(true)/skip(false)
 }
 
 // Run detect + white pass + size gate → shapes (whole-image region).
-export function detectStickers(det: ShapeDetector, image: ImageData): Shape[] {
+export function detectStickers(det: ShapeDetector, image: ImageData): { shapes: Shape[]; edgeCount: number; whiteCount: number } {
   const W = image.width, H = image.height;
   const region: Point2[] = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
   let shapes = det.detect(image, 125, region);
-  // white pass (border-tested) — unioned, sticker-sized, no coloured-neighbour requirement
+  const edgeCount = shapes.length;
+  // white pass — unioned, sticker-sized, no coloured-neighbour requirement
   const near = (a: Point2, b: Point2, s: number) => Math.hypot(a.x - b.x, a.y - b.y) < 0.6 * s;
   const whites = det.detectWhite(image, region, false);   // border test rejects real light-gap whites
   const colSides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
   const whSides = whites.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
   const ref = colSides.length >= 3 ? colSides[colSides.length >> 1] : (whSides.length ? whSides[whSides.length >> 1] : 0);
+  let whiteCount = 0;
   for (const wsh of whites) {
     const side = Math.sqrt(Math.max(1, wsh.area));
     if (shapes.some((s) => near(s.center, wsh.center, side))) continue;
     if (ref > 0) { const r = side / ref; if (r < 0.55 || r > 1.8) continue; }
-    shapes.push(wsh);
+    shapes.push(wsh); whiteCount++;
   }
   // size gate (same-size prior)
   if (shapes.length >= 5) {
@@ -38,12 +42,12 @@ export function detectStickers(det: ShapeDetector, image: ImageData): Shape[] {
     const med = sd[sd.length >> 1];
     shapes = shapes.filter((s) => { const r = Math.sqrt(Math.max(1, s.area)) / med; return r >= 0.5 && r <= 2.1; });
   }
-  return shapes;
+  return { shapes, edgeCount, whiteCount };
 }
 
 export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts = {}): AnalyzeResult {
   const W = image.width, H = image.height;
-  const shapes = detectStickers(det, image);
+  const { shapes, edgeCount, whiteCount } = detectStickers(det, image);
   const all = faceLatticesFromStickers(shapes as never[]);
   // dedupe over-segmented faces (overlapping surfaces)
   const cxy = (s: Point2[]) => ({ x: (s[0].x + s[1].x + s[2].x + s[3].x) / 4, y: (s[0].y + s[1].y + s[2].y + s[3].y) / 4 });
@@ -111,5 +115,5 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
     }
     cells.push(...cur);
   }
-  return { shapes, lattices, cells, links };
+  return { shapes, edgeCount, whiteCount, lattices, cells, links };
 }

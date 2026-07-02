@@ -90,6 +90,11 @@ export default function DatasetTester() {
         ctx.beginPath(); sf.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath(); ctx.stroke();
       }
     }
+    // DEBUG (drawn into the PNG so it's visible in the saved review): build tag +
+    // edge/white/cells counts — lets us tell "cache" (old numbers) from a real result.
+    ctx.fillStyle = "rgba(0,0,0,0.65)"; ctx.fillRect(0, 0, 210, 20);
+    ctx.fillStyle = "#7dd3fc"; ctx.font = "12px monospace";
+    ctx.fillText(`v3 edge:${res.edgeCount} white:${res.whiteCount} cells:${res.cells.length}`, 5, 14);
     const cellAnno = annosRef.current[key]?.cells ?? {};
     for (const c of res.cells) {
       // always a black outer ring so white/cream dots stay visible on light cubes;
