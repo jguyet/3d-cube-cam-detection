@@ -23,6 +23,7 @@ export default function HybridScanner() {
   const netRef = useRef<CubeNet | null>(null);
   const shapeRef = useRef<ShapeDetector | null>(null);
   const poseRef = useRef<{ q: Quat; t: number[]; k: number[] } | null>(null);   // filtered 3D pose (k=[f,fy,cx,cy,s])
+  const coastRef = useRef<{ corners: Point2[]; edges: [number, number][]; ttl: number } | null>(null); // hold last pose through dropouts
   const rafRef = useRef(0);
   const busyRef = useRef(false);
   const histRef = useRef<MLResult[]>([]);
@@ -86,7 +87,8 @@ export default function HybridScanner() {
     }
 
     // ---- CLASSICAL sticker detection INSIDE the ML zone → geometric cube pose ----
-    const shapes = shapeRef.current!.detect(image, 150, region);
+    // 125 (vs 150 offline): webcam frames are noisier/blurrier — catch more stickers.
+    const shapes = shapeRef.current!.detect(image, 125, region);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pose = shapes.length >= 3 ? cubePoseFromStickers(shapes as any, W, H) : null;
 
@@ -128,6 +130,7 @@ export default function HybridScanner() {
       } else {
         poseRef.current = null;
       }
+      coastRef.current = { corners: c, edges: pose.edges, ttl: 14 };  // ~0.5s hold
       // complete cube (cyan): verticals dimmer so the 3D reads
       for (const [i, j] of pose.edges) {
         const vertical = i + 4 === j;
@@ -140,8 +143,19 @@ export default function HybridScanner() {
       ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
       ctx.fillStyle = "#a8f0ff"; ctx.font = "13px system-ui";
       ctx.fillText(`cube 3D — ${pose.faces} face(s), ${shapes.length} stickers, conf ${pose.confidence.toFixed(2)}`, 14, 25);
+    } else if (coastRef.current && coastRef.current.ttl > 0) {
+      // COAST: hold the last good cube through brief detector dropouts (fading) —
+      // kills the blinking that made live feel unstable. Pose filter kept alive.
+      const co = coastRef.current; co.ttl--;
+      const alpha = 0.25 + 0.5 * (co.ttl / 14);
+      ctx.lineWidth = 2.5; ctx.strokeStyle = `rgba(0,224,255,${alpha.toFixed(2)})`;
+      for (const [i, j] of co.edges) { ctx.beginPath(); ctx.moveTo(co.corners[i].x, co.corners[i].y); ctx.lineTo(co.corners[j].x, co.corners[j].y); ctx.stroke(); }
+      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
+      ctx.fillStyle = "#7dd3fc"; ctx.font = "13px system-ui";
+      ctx.fillText(`cube 3D (maintien) — ${shapes.length} stickers`, 14, 25);
     } else {
       poseRef.current = null;
+      coastRef.current = null;
       ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
       ctx.fillStyle = "#fca5a5"; ctx.font = "13px system-ui";
       ctx.fillText(`zone ML — pas de cube confirmé (${shapes.length} stickers)`, 14, 25);
@@ -167,7 +181,7 @@ export default function HybridScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; setStatus("idle"); };
 
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
