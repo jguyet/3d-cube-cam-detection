@@ -22,7 +22,7 @@ export default function HybridScanner() {
   const grabberRef = useRef<FrameGrabber | null>(null);
   const netRef = useRef<CubeNet | null>(null);
   const shapeRef = useRef<ShapeDetector | null>(null);
-  const poseRef = useRef<{ q: Quat; t: number[]; f: number } | null>(null);   // filtered 3D pose
+  const poseRef = useRef<{ q: Quat; t: number[]; k: number[] } | null>(null);   // filtered 3D pose (k=[f,fy,cx,cy,s])
   const rafRef = useRef(0);
   const busyRef = useRef(false);
   const histRef = useRef<MLResult[]>([]);
@@ -111,18 +111,20 @@ export default function HybridScanner() {
         poseOK = md < 0.12 * sz;
       }
       if (pose.pose && poseOK) {
-        const q = matToQuat(pose.pose.R);
+        const p = pose.pose;
+        const q = matToQuat(p.R);
+        const k = [p.f, p.fy ?? p.f, p.cx ?? W / 2, p.cy ?? H / 2, p.s ?? 0];
         const prev = poseRef.current;
-        let fq = q, ft = pose.pose.t, ff = pose.pose.f;
+        let fq = q, ft = p.t, fk = k;
         if (prev) {
           const dot = Math.abs(prev.q[0] * q[0] + prev.q[1] * q[1] + prev.q[2] * q[2] + prev.q[3] * q[3]);
           const a = dot < 0.7 ? 1 : 0.4;   // big reorientation → snap; else smooth
           fq = slerp(prev.q, q, a);
-          ft = pose.pose.t.map((v, i) => prev.t[i] + (v - prev.t[i]) * a);
-          ff = prev.f + (pose.pose.f - prev.f) * a;
+          ft = p.t.map((v, i) => prev.t[i] + (v - prev.t[i]) * a);
+          fk = k.map((v, i) => prev.k[i] + (v - prev.k[i]) * a);
         }
-        poseRef.current = { q: fq, t: ft, f: ff };
-        c = projectPose({ R: quatToMat(fq), t: ft, f: ff }, W, H);
+        poseRef.current = { q: fq, t: ft, k: fk };
+        c = projectPose({ R: quatToMat(fq), t: ft, f: fk[0], fy: fk[1], cx: fk[2], cy: fk[3], s: fk[4] }, W, H);
       } else {
         poseRef.current = null;
       }

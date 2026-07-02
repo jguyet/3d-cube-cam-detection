@@ -631,7 +631,9 @@ function extractFacesV2(shapes: Shape[]): Face[] {
 }
 
 // ---- pose export for temporal (quaternion) filtering in the caller ----------
-export interface Pose3D { R: Mat; t: Vec; f: number }
+// f = fx; fy/cx/cy/s optional full intrinsics (from the multi-face DLT camera
+// decomposition); when absent projectPose assumes fy=f, principal at image centre.
+export interface Pose3D { R: Mat; t: Vec; f: number; fy?: number; cx?: number; cy?: number; s?: number }
 
 // Clean R,t,f from ONE face's homography (grid[0..3] -> image), so the caller can
 // SLERP-filter the pose across frames and reproject a rigid cube (no pixel swim).
@@ -656,14 +658,67 @@ function poseFromFaceH(faceH: Mat, W: number, Himg: number): Pose3D | null {
 
 // project the ideal [0,3]^3 cube with a Pose3D → 8 image corners (same order as CubePose)
 export function projectPose(p: Pose3D, W: number, Himg: number): Point2[] {
-  const cx = W / 2, cy = Himg / 2, f = p.f, R = p.R, t = p.t;
+  const fx = p.f, fy = p.fy ?? p.f, cx = p.cx ?? W / 2, cy = p.cy ?? Himg / 2, sk = p.s ?? 0;
+  const R = p.R, t = p.t;
   return CUBE_CORNERS.map((X) => {
+    const xc = R[0][0] * X[0] + R[0][1] * X[1] + R[0][2] * X[2] + t[0];
+    const yc = R[1][0] * X[0] + R[1][1] * X[1] + R[1][2] * X[2] + t[1];
     const zc = R[2][0] * X[0] + R[2][1] * X[1] + R[2][2] * X[2] + t[2] || 1e-9;
-    return {
-      x: (f * (R[0][0] * X[0] + R[0][1] * X[1] + R[0][2] * X[2] + t[0]) + cx * zc) / zc,
-      y: (f * (R[1][0] * X[0] + R[1][1] * X[1] + R[1][2] * X[2] + t[1]) + cy * zc) / zc,
-    };
+    return { x: (fx * xc + sk * yc + cx * zc) / zc, y: (fy * yc + cy * zc) / zc };
   });
+}
+
+// Decompose a 3×4 projective camera P = K[R|t] (RQ on the left 3×3 via Givens),
+// so the MULTI-FACE resection also yields a filterable {R,t,K} pose that
+// reprojects the cube exactly.
+function decomposeP(P0: Mat, retried = false): Pose3D | null {
+  // Euclidean interpretation needs det(M) > 0 — P is projective (defined up to
+  // scale), so flip its sign first if needed. K's diagonal is forced positive
+  // below, hence det(R) = det(M)/det(K) = +1 automatically.
+  const det3 = (A: Mat) => A[0][0] * (A[1][1] * A[2][2] - A[1][2] * A[2][1]) - A[0][1] * (A[1][0] * A[2][2] - A[1][2] * A[2][0]) + A[0][2] * (A[1][0] * A[2][1] - A[1][1] * A[2][0]);
+  const P = det3([[P0[0][0], P0[0][1], P0[0][2]], [P0[1][0], P0[1][1], P0[1][2]], [P0[2][0], P0[2][1], P0[2][2]]]) < 0
+    ? P0.map((row) => row.map((v) => -v)) : P0;
+  const M: Mat = [[P[0][0], P[0][1], P[0][2]], [P[1][0], P[1][1], P[1][2]], [P[2][0], P[2][1], P[2][2]]];
+  // Givens 1 (about x): zero M[2][1]
+  let d = Math.hypot(M[2][2], M[2][1]); if (d < 1e-12) return null;
+  let c = M[2][2] / d, s = M[2][1] / d;
+  const Qx: Mat = [[1, 0, 0], [0, c, s], [0, -s, c]];
+  const B = matMul(M, Qx);
+  // Givens 2 (about y): zero B[2][0]
+  d = Math.hypot(B[2][2], B[2][0]); if (d < 1e-12) return null;
+  c = B[2][2] / d; s = B[2][0] / d;
+  const Qy: Mat = [[c, 0, -s], [0, 1, 0], [s, 0, c]];
+  const C = matMul(B, Qy);
+  // Givens 3 (about z): zero C[1][0]
+  d = Math.hypot(C[1][1], C[1][0]); if (d < 1e-12) return null;
+  c = C[1][1] / d; s = C[1][0] / d;
+  const Qz: Mat = [[c, s, 0], [-s, c, 0], [0, 0, 1]];
+  const K = matMul(C, Qz);                       // upper triangular
+  // R = Qz^T Qy^T Qx^T
+  const tr = (A: Mat): Mat => [[A[0][0], A[1][0], A[2][0]], [A[0][1], A[1][1], A[2][1]], [A[0][2], A[1][2], A[2][2]]];
+  let R = matMul(matMul(tr(Qz), tr(Qy)), tr(Qx));
+  // make K diagonal positive (flip matching R rows)
+  for (let i = 0; i < 3; i++) if (K[i][i] < 0) { for (let r = 0; r < 3; r++) K[r][i] = -K[r][i]; for (let cc = 0; cc < 3; cc++) R[i][cc] = -R[i][cc]; }
+  // normalise K so K[2][2] = 1
+  const k22 = K[2][2]; if (Math.abs(k22) < 1e-12) return null;
+  for (let r = 0; r < 3; r++) for (let cc = 0; cc < 3; cc++) K[r][cc] /= k22;
+  // t = K^-1 · p4  (K now unit-normalised; account for the k22 scale on p4)
+  const Ki = invert3(K); if (!Ki) return null;
+  const p4 = [P[0][3] / k22, P[1][3] / k22, P[2][3] / k22];
+  let t = [Ki[0][0] * p4[0] + Ki[0][1] * p4[1] + Ki[0][2] * p4[2],
+    Ki[1][0] * p4[0] + Ki[1][1] * p4[1] + Ki[1][2] * p4[2],
+    Ki[2][0] * p4[0] + Ki[2][1] * p4[1] + Ki[2][2] * p4[2]];
+  // If the scene decodes BEHIND the camera (t_z<0), apply D=diag(-1,1,-1): a
+  // det=+1 similarity that flips z. R stays a proper rotation; K absorbs the
+  // flip as fy→−fy (numerically harmless — projectPose just multiplies).
+  if (t[2] < 0) {
+    R = [[-R[0][0], -R[0][1], -R[0][2]], [R[1][0], R[1][1], R[1][2]], [-R[2][0], -R[2][1], -R[2][2]]];
+    t = [-t[0], t[1], -t[2]];
+    K[0][1] = -K[0][1]; K[1][1] = -K[1][1];   // s→−s, fy→−fy (fx, cx, cy unchanged)
+  }
+  const fx = K[0][0], fy = K[1][1];
+  if (!isFinite(fx) || !isFinite(fy) || fx <= 0 || Math.abs(fy) < 1e-6) return null;
+  return { R, t, f: fx, fy, cx: K[0][2], cy: K[1][2], s: K[0][1] };
 }
 
 export type Quat = [number, number, number, number];
@@ -842,7 +897,8 @@ export function cubePoseFromStickers(shapes: Shape[], W: number, H: number): Cub
     conf *= 0.5 + 0.5 * coverage;
     conf *= 0.6 + 0.4 * consist;
     conf = Math.max(0.05, Math.min(1, conf));
-    return { corners, edges: CUBE_EDGES, faces: nfaces, confidence: conf, pose: poseFromFaceH(F[0].H, W, H) || undefined };
+    // exact filterable pose from the resection camera itself (RQ decomposition)
+    return { corners, edges: CUBE_EDGES, faces: nfaces, confidence: conf, pose: decomposeP(P) || poseFromFaceH(F[0].H, W, H) || undefined };
   } catch {
     return null;
   }
