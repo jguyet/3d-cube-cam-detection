@@ -210,7 +210,18 @@ export default function HybridScanner() {
     // ---- LIAISONS (primary display): connect DETECTED sticker centres to their
     // grid neighbours — coherent cube-structure links, nothing invented/inferred.
     // Solid green = adjacent; dashed = same row/col skipping one missing cell.
-    const lattices = faceLatticesFromStickers(tracked as never[]);
+    const allLat = faceLatticesFromStickers(tracked as never[]);
+    // DEDUPE over-segmented faces: one physical face split into two groups yields
+    // OVERLAPPING surfaces (near-equal centroids). Two genuinely-visible faces sit
+    // side by side and don't overlap, so this only removes the spurious duplicates.
+    const cxy = (s: Point2[]) => ({ x: (s[0].x + s[1].x + s[2].x + s[3].x) / 4, y: (s[0].y + s[1].y + s[2].y + s[3].y) / 4 });
+    const diag = (s: Point2[]) => Math.hypot(s[2].x - s[0].x, s[2].y - s[0].y);
+    const lattices: typeof allLat = [];
+    for (const lat of [...allLat].sort((a, b) => b.count - a.count)) {
+      const c = cxy(lat.surface), sz = diag(lat.surface);
+      if (lattices.some((o) => Math.hypot(cxy(o.surface).x - c.x, cxy(o.surface).y - c.y) < 0.5 * Math.max(sz, diag(o.surface)))) continue;
+      lattices.push(lat);
+    }
     let nLinks = 0;
     for (const lat of lattices) {
       const cents = lat.centres;
