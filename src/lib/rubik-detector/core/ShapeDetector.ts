@@ -120,7 +120,7 @@ export class ShapeDetector {
   // is dropped. Detect them directly by a brightness+low-saturation MASK instead
   // of by edges. Erode 1px to break the thin bridges where the dark gap between two
   // whites is overexposed, then take connected components that pass the shape gate.
-  detectWhite(img: ImageData, region?: import("../types").Point2[]): Shape[] {
+  detectWhite(img: ImageData, region?: import("../types").Point2[], borderTest = false): Shape[] {
     const px = img.data, w = img.width, h = img.height, frame = w * h;
     const mask = new Uint8Array(frame);
     for (let i = 0; i < frame; i++) {
@@ -161,6 +161,31 @@ export class ShapeDetector {
       let cx = 0, cy = 0; for (const c of rect.corners) { cx += c.x; cy += c.y; }
       const center = { x: cx / 4, y: cy / 4 };
       if (region && !pointInPoly(center, region)) continue;
+      // DARK-BORDER test: a real facelet is ringed by the dark inter-sticker plastic
+      // gap (and coloured neighbours read darker than white); a white wall/furniture
+      // panel is surrounded by more bright pixels. Reject a blob with essentially NO
+      // darker border on any side. (Most reliable on the high-res crop where the gap
+      // is several px wide.)
+      if (borderTest) {
+        const lumaAt = (x: number, y: number) => {
+          const xi = Math.round(x), yi = Math.round(y);
+          if (xi < 0 || yi < 0 || xi >= w || yi >= h) return 255;   // off-frame = treat as bright (no border)
+          const i = (yi * w + xi) * 4; return 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        };
+        let bin = 0; const nb = Math.min(pts.length, 400), stepB = Math.max(1, (pts.length / nb) | 0);
+        let cnt = 0; for (let p = 0; p < pts.length; p += stepB) { bin += lumaAt(pts[p].x, pts[p].y); cnt++; }
+        bin = cnt ? bin / cnt : 200;
+        let dark = 0, tot = 0;
+        for (let e = 0; e < 12; e++) {                              // ring just outside the rect
+          const t = e / 12, seg = Math.floor(t * 4), ft = t * 4 - seg;
+          const a0 = rect.corners[seg], a1 = rect.corners[(seg + 1) % 4];
+          const ex = center.x + ((a0.x + (a1.x - a0.x) * ft) - center.x) * 1.35;
+          const ey = center.y + ((a0.y + (a1.y - a0.y) * ft) - center.y) * 1.35;
+          if (lumaAt(ex, ey) < 0.62 * bin) dark++;
+          tot++;
+        }
+        if (tot > 0 && dark / tot < 0.25) continue;                 // flat bright surround → wall/furniture
+      }
       shapes.push({ corners: rect.corners, center, area, fill });
     }
     return shapes;

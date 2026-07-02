@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
-import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
+import { ShapeDetector, type Shape } from "@/lib/rubik-detector/core/ShapeDetector";
 import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
 import { sampleQuadRGB, classifyColour, colourHex, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 import { stabiliseZone, type Zone } from "@/lib/ml/temporalStabilise";
@@ -140,6 +140,7 @@ export default function HybridScanner() {
     // missed (live counter stuck at 4-6 even with 9 visible). Crop the zone from
     // the NATIVE video (720p+): stickers become ~3× bigger → far better recall.
     let shapes = shapeRef.current!.detect(image, 125, region);
+    let cropWhites: Shape[] | null = null;   // border-tested whites from the hi-res crop
     const vw = video.videoWidth, vh = video.videoHeight;
     if (vw > W * 1.3) {
       const zx = Math.max(0, (rx0 / W) * vw), zy = Math.max(0, (ry0 / H) * vh);
@@ -152,39 +153,36 @@ export default function HybridScanner() {
         cctx.drawImage(video, zx, zy, zw, zh, 0, 0, cw, ch);
         const cropImg = cctx.getImageData(0, 0, cw, ch);
         const cropRegion: Point2[] = [{ x: 0, y: 0 }, { x: cw, y: 0 }, { x: cw, y: ch }, { x: 0, y: ch }];
+        const sx = (rx1 - rx0) / cw, sy = (ry1 - ry0) / ch;
+        const mapBack = (s: Shape): Shape => ({
+          corners: s.corners.map((p) => ({ x: rx0 + p.x * sx, y: ry0 + p.y * sy })) as [Point2, Point2, Point2, Point2],
+          center: { x: rx0 + s.center.x * sx, y: ry0 + s.center.y * sy },
+          area: s.area * sx * sy, fill: s.fill,
+        });
         const hi = shapeRef.current!.detect(cropImg, 125, cropRegion);
-        if (hi.length > shapes.length) {   // keep whichever scale found more
-          const sx = (rx1 - rx0) / cw, sy = (ry1 - ry0) / ch;
-          shapes = hi.map((s) => ({
-            corners: s.corners.map((p) => ({ x: rx0 + p.x * sx, y: ry0 + p.y * sy })) as [Point2, Point2, Point2, Point2],
-            center: { x: rx0 + s.center.x * sx, y: ry0 + s.center.y * sy },
-            area: s.area * sx * sy,
-            fill: s.fill,
-          }));
-        }
+        if (hi.length > shapes.length) shapes = hi.map(mapBack);   // keep whichever scale found more
+        // whites detected at high-res WITH the dark-border test (gap is several px wide here)
+        cropWhites = shapeRef.current!.detectWhite(cropImg, cropRegion, true).map(mapBack);
       }
     }
-    // ---- WHITE PASS: the edge detector misses glared/desaturated white facelets,
-    // so also detect them by a brightness+low-saturation mask. But that mask ALSO
-    // fires on white furniture/wall — so a white blob is only accepted when it is
-    // CONSISTENT with the already-detected coloured cluster: sticker-sized AND next
-    // to a real sticker. Furniture behind the cube fails both. (Falls back to the
-    // loose region push when too few coloured stickers exist to form a reference.)
+    // ---- WHITE PASS: white facelets can't be edge-detected (glare/blend). Detect
+    // them by a brightness mask WITH the dark-border test (a real facelet is ringed
+    // by the black gap; a flat wall square isn't). Crucially, do NOT require a
+    // coloured neighbour — a FULLY WHITE face has none; its 9 squares must be able
+    // to form the grid on their own. Furniture is rejected two ways: the per-square
+    // border test, and the face-level grid coherence in extractFacesV2 (scattered
+    // furniture squares don't rectify to a regular 3×3). Size-plausibility uses the
+    // coloured cluster if present, else the whites' own median (all ~equal on a face).
     {
-      const whites = shapeRef.current!.detectWhite(image, region);
+      const whites = cropWhites ?? shapeRef.current!.detectWhite(image, region, true);
       const near = (a: Point2, b: Point2, s: number) => Math.hypot(a.x - b.x, a.y - b.y) < 0.6 * s;
-      const sides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
-      const medCol = sides.length ? sides[sides.length >> 1] : 0;
-      const enoughCluster = shapes.length >= 3 && medCol > 0;
+      const colSides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
+      const whSides = whites.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
+      const ref = colSides.length >= 3 ? colSides[colSides.length >> 1] : (whSides.length ? whSides[whSides.length >> 1] : 0);
       for (const wsh of whites) {
         const side = Math.sqrt(Math.max(1, wsh.area));
         if (shapes.some((s) => near(s.center, wsh.center, side))) continue;   // duplicate of an edge sticker
-        if (enoughCluster) {
-          const r = side / medCol;
-          if (r < 0.6 || r > 1.7) continue;                                   // not sticker-sized
-          const adjacent = shapes.some((s) => Math.hypot(s.center.x - wsh.center.x, s.center.y - wsh.center.y) < 1.8 * medCol);
-          if (!adjacent) continue;                                           // floating white → furniture/wall
-        }
+        if (ref > 0) { const r = side / ref; if (r < 0.55 || r > 1.8) continue; }   // sticker-sized only
         shapes.push(wsh);
       }
     }
@@ -310,6 +308,38 @@ export default function HybridScanner() {
           for (const k in votes) if (votes[k] > bestN) { bestN = votes[k]; bestC = k; }
           if (tot > 0 && bestN / tot >= 0.4) {           // partial acceptance on the sticker footprint
             cents.push({ x: mid.x, y: mid.y, gx, gy, name: bestC as CubeColour, found: true });
+            nFound++;
+          }
+        }
+      }
+
+      // ---- WHITE COMPLETION (ALWAYS ON): white facelets can't be found by shape/
+      // edge detection (they glare & blend). Find them by GRID POSITION instead —
+      // any empty cell of a formed face that reads bright & neutral is a white
+      // facelet. Furniture can never qualify: it never lands on a formed face's
+      // grid cell. This is the primary white mechanism.
+      {
+        const half = Math.max(0.18, 0.5 * lat.stickerFrac * 0.9);
+        const lo = 0.5 - half, hi = 0.5 + half, step = (hi - lo) / 4;
+        for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
+          if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
+          const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+          const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
+          if (mid.x < rx0 || mid.x > rx1 || mid.y < ry0 || mid.y > ry1) continue;
+          let whiteN = 0, tot = 0;
+          for (let u = lo; u <= hi + 1e-6; u += step) for (let v = lo; v <= hi + 1e-6; v += step) {
+            const x = (1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x;
+            const y = (1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y;
+            const rgb = sampleQuadRGB([{ x: x - 2, y: y - 2 }, { x: x + 2, y: y - 2 }, { x: x + 2, y: y + 2 }, { x: x - 2, y: y + 2 }], image.data, W, H);
+            if (!rgb) continue;
+            tot++;
+            const mx = Math.max(rgb[0], rgb[1], rgb[2]), mn = Math.min(rgb[0], rgb[1], rgb[2]);
+            const sat = mx > 0 ? (mx - mn) / mx : 0;
+            const whiteByMem = mem && (mem.refs.white?.n ?? 0) >= 4 ? mem.classify(rgb) === "white" : false;
+            if (whiteByMem || (mx > 140 && sat < 0.30)) whiteN++;   // bright & neutral = white facelet
+          }
+          if (tot > 0 && whiteN / tot >= 0.5) {
+            cents.push({ x: mid.x, y: mid.y, gx, gy, name: "white", found: true });
             nFound++;
           }
         }
