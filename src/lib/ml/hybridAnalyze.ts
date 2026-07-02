@@ -73,10 +73,19 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
       const c = mem.classify(rgb);
       return c === "skin" ? "white" : c;
     };
+    const detRGB: [number, number, number][] = [];
     const cur: { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; li: number }[] = lat.centres.map((c0) => {
       const rgb = sampleQuadRGB(c0.corners, image.data, W, H);
+      if (rgb) detRGB.push(rgb);
       return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: cellName(rgb), li };
     });
+    // On a UNIFORM face (all detected cells the same colour) a completed cell must
+    // match that colour — this rejects an off-cube grid cell that landed on the
+    // wall/table (which reads white-ish but is a different tone). Median ref RGB.
+    const uniform = cur.length >= 2 && new Set(cur.map((c) => c.name)).size === 1 && detRGB.length >= 2;
+    const med = (i: number) => { const s = detRGB.map((r) => r[i]).sort((a, b) => a - b); return s[s.length >> 1]; };
+    const faceRGB: [number, number, number] | null = uniform ? [med(0), med(1), med(2)] : null;
+    const rgbFar = (rgb: [number, number, number] | null) => !!(faceRGB && rgb && Math.hypot(rgb[0] - faceRGB[0], rgb[1] - faceRGB[1], rgb[2] - faceRGB[2]) > 46);
     // completion ONLY on a coherent (non-degenerate) grid — a collapsed homography
     // would stack all completed cells on one point.
     const half = Math.max(0.18, 0.5 * lat.stickerFrac * 0.9);
@@ -84,6 +93,8 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
     if (lat.gridCoherent) for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
       if (lat.filled[gx][gy] || cur.some((c) => c.gx === gx && c.gy === gy)) continue;
       const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+      const mid0 = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
+      if (rgbFar(sampleQuadRGB([{ x: mid0.x - 3, y: mid0.y - 3 }, { x: mid0.x + 3, y: mid0.y - 3 }, { x: mid0.x + 3, y: mid0.y + 3 }, { x: mid0.x - 3, y: mid0.y + 3 }], image.data, W, H))) continue;   // off-cube tone on a uniform face
       const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
       const votes: Record<string, number> = {}, uv: Record<string, { u: number; v: number }[]> = {};
       let whiteN = 0, tot = 0; const wpts: { u: number; v: number }[] = [];
