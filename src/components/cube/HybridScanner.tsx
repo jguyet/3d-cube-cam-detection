@@ -48,6 +48,9 @@ export default function HybridScanner() {
   const [splitBlocks, setSplitBlocks] = useState(false);    // split same-colour blocks (gap-less cubes)
   const splitRef = useRef(false);
   splitRef.current = splitBlocks;
+  const [showContour, setShowContour] = useState(false);    // exact cube-surface contour sensor
+  const contourRef = useRef(false);
+  contourRef.current = showContour;
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -238,6 +241,16 @@ export default function HybridScanner() {
           ctx.beginPath(); ctx.moveTo(lat.nodes[0][u].x, lat.nodes[0][u].y); ctx.lineTo(lat.nodes[3][u].x, lat.nodes[3][u].y); ctx.stroke();
         }
       }
+      // CONTOUR SENSOR: each face's surface is the grid extrapolated (via measured
+      // sticker proportions) out to the physical cube edge → the exact border.
+      if (contourRef.current) {
+        const sf = lat.surface;
+        ctx.fillStyle = "rgba(255,0,200,0.10)";
+        ctx.beginPath(); sf.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath(); ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,0,200,0.95)"; ctx.stroke();
+        ctx.fillStyle = "#ff64d2";
+        for (const p of sf) { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill(); }
+      }
     }
 
     if (pose) {
@@ -361,6 +374,9 @@ export default function HybridScanner() {
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
           <input type="checkbox" checked={splitBlocks} onChange={(e) => setSplitBlocks(e.target.checked)} /> découper blocs même couleur (sans gap)
+        </label>
+        <label className="flex items-center gap-2 text-sm font-medium text-fuchsia-600 dark:text-fuchsia-400">
+          <input type="checkbox" checked={showContour} onChange={(e) => setShowContour(e.target.checked)} /> contour exact du cube
         </label>
         <button onClick={() => { try { localStorage.removeItem("rubix-palette"); } catch { } if (memRef.current) memRef.current.refs = {}; }}
           className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">

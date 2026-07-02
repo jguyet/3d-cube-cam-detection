@@ -587,6 +587,8 @@ export interface FaceLattice {
   filled: boolean[][];          // [gx][gy] 3×3 — true where a sticker was DETECTED
   centres: { x: number; y: number; gx: number; gy: number }[]; // detected sticker centres + grid cell
   count: number;                // detected stickers on this face
+  stickerFrac: number;          // sticker side / cell pitch (proportion; 1 = no gap)
+  surface: [Point2, Point2, Point2, Point2]; // EXACT cube-face outer contour (extrapolated to the physical edge)
 }
 export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
   if (!shapes || shapes.length < 3) return [];
@@ -602,7 +604,25 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
         const c = lineXPoint(st.shape.corners) || st.shape.center;  // exact centre (diagonals)
         centres.push({ x: c.x, y: c.y, gx: st.gx, gy: st.gy });
       }
-      return { nodes, filled, centres, count: f.stickers.length };
+      // MEASURE PROPORTIONS: one grid unit (cell pitch) in px vs the sticker side.
+      const O = applyH(f.H, { x: 1, y: 1 });
+      const pu = applyH(f.H, { x: 2, y: 1 }), pv = applyH(f.H, { x: 1, y: 2 });
+      const pitch = (Math.hypot(pu.x - O.x, pu.y - O.y) + Math.hypot(pv.x - O.x, pv.y - O.y)) / 2 || 1;
+      const sides = f.stickers.map((st) => {
+        const c = st.shape.corners;
+        return (Math.hypot(c[1].x - c[0].x, c[1].y - c[0].y) + Math.hypot(c[3].x - c[0].x, c[3].y - c[0].y)) / 2;
+      }).sort((a, b) => a - b);
+      const sSide = sides[sides.length >> 1] || pitch;
+      const stickerFrac = Math.max(0.5, Math.min(0.98, sSide / pitch));
+      // The face spans grid [0,3]; the physical cube edge sits beyond the outer
+      // stickers by ~half the gap (node→sticker) plus the plastic frame border.
+      const gap = 1 - stickerFrac;
+      const m = Math.min(0.6, gap * 0.5 + 0.12);
+      const surface: [Point2, Point2, Point2, Point2] = [
+        applyH(f.H, { x: -m, y: -m }), applyH(f.H, { x: 3 + m, y: -m }),
+        applyH(f.H, { x: 3 + m, y: 3 + m }), applyH(f.H, { x: -m, y: 3 + m }),
+      ];
+      return { nodes, filled, centres, count: f.stickers.length, stickerFrac, surface };
     });
   } catch { return []; }
 }
