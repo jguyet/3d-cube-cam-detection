@@ -24,6 +24,10 @@ export default function HybridScanner() {
   const shapeRef = useRef<ShapeDetector | null>(null);
   const cropRef = useRef<HTMLCanvasElement | null>(null);   // high-res zone crop
   const poseRef = useRef<{ q: Quat; t: number[]; k: number[] } | null>(null);   // filtered 3D pose (k=[f,fy,cx,cy,s])
+  // sticker HISTORY across frames: recently-seen stickers persist a few frames so
+  // the links don't flicker with per-frame detection dropouts
+  type TrackedShape = { corners: [Point2, Point2, Point2, Point2]; center: Point2; area: number; fill: number };
+  const tracksRef = useRef<{ shape: TrackedShape; ttl: number }[]>([]);
   const coastRef = useRef<{ corners: Point2[]; edges: [number, number][]; ttl: number } | null>(null); // hold last pose through dropouts
   const rafRef = useRef(0);
   const busyRef = useRef(false);
@@ -122,24 +126,68 @@ export default function HybridScanner() {
         }
       }
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pose = shapes.length >= 3 ? cubePoseFromStickers(shapes as any, W, H) : null;
-
-    // detected stickers (faint)
-    ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    // ---- STICKER HISTORY: merge this frame's detections into short-lived tracks
+    // (TTL ~8 frames). A sticker missed on one frame keeps feeding the links.
+    const TTL = 8;
+    const tracks = tracksRef.current;
+    for (const t of tracks) t.ttl--;
     for (const s of shapes) {
-      ctx.beginPath(); s.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      const side = Math.sqrt(Math.max(1, s.area));
+      let best: { shape: TrackedShape; ttl: number } | null = null, bd = Infinity;
+      for (const t of tracks) {
+        const d = Math.hypot(t.shape.center.x - s.center.x, t.shape.center.y - s.center.y);
+        if (d < bd) { bd = d; best = t; }
+      }
+      if (best && bd < 0.7 * side) { best.shape = s as TrackedShape; best.ttl = TTL; }
+      else tracks.push({ shape: s as TrackedShape, ttl: TTL });
+    }
+    tracksRef.current = tracks.filter((t) => t.ttl > 0);
+    const tracked = tracksRef.current.map((t) => t.shape);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pose = tracked.length >= 3 ? cubePoseFromStickers(tracked as any, W, H) : null;
+
+    // tracked stickers (faint; fresher = brighter)
+    for (const t of tracksRef.current) {
+      ctx.lineWidth = 1; ctx.strokeStyle = `rgba(255,255,255,${(0.15 + 0.25 * (t.ttl / TTL)).toFixed(2)})`;
+      ctx.beginPath(); t.shape.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       ctx.closePath(); ctx.stroke();
     }
 
     // ---- LIAISONS (primary display): connect the detected sticker centres to
     // their grid NEIGHBOURS — coherent cube-structure links, nothing invented.
     // Solid green = adjacent stickers; dashed = same row/col with one missing cell.
-    const lattices = faceLatticesFromStickers(shapes as never[]);
+    const lattices = faceLatticesFromStickers(tracked as never[]);
     let nLinks = 0;
+    // sample a lattice cell's colour content → recover PARTIALLY-HIDDEN stickers:
+    // the homography says where the cell is; if enough pixels inside are a vivid
+    // colour (or clean white), the sticker is there — just occluded by a finger.
+    const cellHasSticker = (lat: (typeof lattices)[0], gx: number, gy: number): boolean => {
+      const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
+      let hit = 0, n = 0;
+      for (let u = 0.2; u <= 0.85; u += 0.16) for (let v = 0.2; v <= 0.85; v += 0.16) {
+        const x = Math.round((1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x);
+        const y = Math.round((1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y);
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const i = (y * W + x) * 4, r = image.data[i], g = image.data[i + 1], b = image.data[i + 2];
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+        const sat = mx > 0 ? (mx - mn) / mx : 0;
+        if ((sat > 0.45 && mx > 70) || (mx > 170 && sat < 0.18)) hit++;
+        n++;
+      }
+      return n > 0 && hit / n >= 0.35;
+    };
     for (const lat of lattices) {
-      for (let a = 0; a < lat.centres.length; a++) for (let b = a + 1; b < lat.centres.length; b++) {
-        const A = lat.centres[a], B = lat.centres[b];
+      // augment with partially-hidden stickers found by cell colour sampling
+      const cents: { x: number; y: number; gx: number; gy: number; partial?: boolean }[] = [...lat.centres];
+      for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
+        if (lat.filled[gx][gy]) continue;
+        if (!cellHasSticker(lat, gx, gy)) continue;
+        const A = lat.nodes[gx][gy], C = lat.nodes[gx + 1][gy + 1], B = lat.nodes[gx + 1][gy], D = lat.nodes[gx][gy + 1];
+        cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, partial: true });
+      }
+      for (let a = 0; a < cents.length; a++) for (let b = a + 1; b < cents.length; b++) {
+        const A = cents[a], B = cents[b];
         const dgx = Math.abs(A.gx - B.gx), dgy = Math.abs(A.gy - B.gy);
         if (dgx + dgy === 1) {                                   // direct neighbours
           ctx.setLineDash([]); ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(0,255,120,0.9)";
@@ -149,8 +197,11 @@ export default function HybridScanner() {
         ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); nLinks++;
       }
       ctx.setLineDash([]);
-      ctx.fillStyle = "#00ff78";
-      for (const c0 of lat.centres) { ctx.beginPath(); ctx.arc(c0.x, c0.y, 4, 0, Math.PI * 2); ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = "#000"; ctx.stroke(); }
+      for (const c0 of cents) {
+        ctx.beginPath(); ctx.arc(c0.x, c0.y, 4, 0, Math.PI * 2);
+        if (c0.partial) { ctx.lineWidth = 2; ctx.strokeStyle = "#00ff78"; ctx.stroke(); }   // hollow = partially hidden
+        else { ctx.fillStyle = "#00ff78"; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = "#000"; ctx.stroke(); }
+      }
       // optional extrapolated 3×3 grid (off by default)
       if (showLatticeRef.current) {
         ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,140,0,0.7)";
@@ -217,7 +268,7 @@ export default function HybridScanner() {
 
     ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 280, 24);
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
-    ctx.fillText(`${nLinks} liaison(s) · ${shapes.length} stickers · ${lattices.length} face(s)`, 14, 25);
+    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers (hist) · ${lattices.length} face(s)`, 14, 25);
   };
 
   const start = async () => {
