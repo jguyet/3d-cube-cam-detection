@@ -645,10 +645,32 @@ function extractFacesV2(shapes: Shape[]): Face[] {
       if (set.length > best.length) best = set;
     }
     if (best.length < 4) break;
-    const st: FaceSticker[] = best.map((e) => ({ shape: items[e.i].s, idx: e.i, gx: e.gx, gy: e.gy }));
-    const Hf = fitFaceH(st, null); if (!Hf) break;
+    let st: FaceSticker[] = best.map((e) => ({ shape: items[e.i].s, idx: e.i, gx: e.gx, gy: e.gy }));
+    let Hf = fitFaceH(st, null); if (!Hf) break;
+    // RE-COLLECT with the refined FACE homography (true pitch incl. the gaps): the
+    // seed's single-sticker frame underestimates the pitch, which used to lock a
+    // face at the 4 nearest stickers and mistake the gaps for missing cells.
+    for (let it = 0; it < 2; it++) {
+      const Hi2 = invert3(Hf); if (!Hi2) break;
+      const perCell = new Map<string, { i: number; gx: number; gy: number; err: number }>();
+      for (const o of remaining) {
+        const g = applyH(Hi2, items[o].s.center);
+        const gx = Math.round(g.x - 0.5), gy = Math.round(g.y - 0.5);
+        if (gx < 0 || gx > 2 || gy < 0 || gy > 2) continue;
+        const err = Math.hypot(g.x - 0.5 - gx, g.y - 0.5 - gy);
+        if (err > 0.30) continue;
+        if (!skewOK(Hi2, items[o].s)) continue;   // reject folded (other-face) quads
+        const key = gx + ',' + gy;
+        const prev = perCell.get(key);
+        if (!prev || err < prev.err) perCell.set(key, { i: o, gx, gy, err });
+      }
+      if (perCell.size < 4) break;
+      const st2: FaceSticker[] = Array.from(perCell.values()).map((e) => ({ shape: items[e.i].s, idx: e.i, gx: e.gx, gy: e.gy }));
+      const Hf2 = fitFaceH(st2, Hf); if (!Hf2) break;
+      st = st2; Hf = Hf2;
+    }
     faces.push({ stickers: st, H: Hf, cornersImg: faceCorners(Hf) });
-    for (const e of best) remaining.delete(e.i);
+    for (const e of st) remaining.delete(e.idx);
   }
   return faces.slice(0, 3);
 }

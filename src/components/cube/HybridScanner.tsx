@@ -31,6 +31,9 @@ export default function HybridScanner() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [showMl, setShowMl] = useState(true);
+  const [showLattice, setShowLattice] = useState(true);
+  const showLatticeRef = useRef(true);
+  showLatticeRef.current = showLattice;
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -103,7 +106,7 @@ export default function HybridScanner() {
     // connections → COMPLETE 3×3 grid per face, anchored exactly on the stickers.
     // Missing cells are completed by the face structure; 2 faces show the cube fold.
     const lattices = faceLatticesFromStickers(shapes as never[]);
-    for (const lat of lattices) {
+    if (showLatticeRef.current) for (const lat of lattices) {
       ctx.fillStyle = "rgba(255,140,0,0.16)";              // detected cells, light fill
       for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
         if (!lat.filled[gx][gy]) continue;
@@ -227,7 +230,10 @@ export default function HybridScanner() {
           <button onClick={stop} className="rounded-xl bg-slate-200 px-5 py-3 font-semibold text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Arrêter</button>
         )}
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-          <input type="checkbox" checked={showMl} onChange={(e) => setShowMl(e.target.checked)} /> superposer le cube ML (cyan)
+          <input type="checkbox" checked={showMl} onChange={(e) => setShowMl(e.target.checked)} /> zone ML (cyan)
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+          <input type="checkbox" checked={showLattice} onChange={(e) => setShowLattice(e.target.checked)} /> liaisons / grilles (orange)
         </label>
       </div>
       <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
