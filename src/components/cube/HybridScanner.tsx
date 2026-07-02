@@ -127,12 +127,13 @@ export default function HybridScanner() {
         }
       }
     }
-    // ---- COLOUR GATE: drop quads whose interior is SKIN (beige/brown = a finger,
-    // not a sticker) before they pollute the links (user's idea).
+    // ---- COLOUR GATE: drop quads whose interior is SKIN (beige/brown finger) or
+    // DARK (black / dark-brown = hair or deep shadow) — neither is a lit sticker
+    // (user's idea). Cleans the links of non-cube quads.
     let nSkin = 0;
     shapes = shapes.filter((s) => {
       const rgb = sampleQuadRGB(s.corners, image.data, W, H);
-      if (rgb && classifyColour(rgb) === "skin") { nSkin++; return false; }
+      if (rgb) { const c = classifyColour(rgb); if (c === "skin" || c === "dark") { nSkin++; return false; } }
       return true;
     });
 

@@ -2,13 +2,13 @@
 // SKIN (beige/brown = a finger, not a sticker) so the caller can drop it. Pure,
 // no deps; works on a flat RGBA frame buffer.
 
-export type CubeColour = "white" | "yellow" | "red" | "orange" | "green" | "blue" | "skin" | "unknown";
+export type CubeColour = "white" | "yellow" | "red" | "orange" | "green" | "blue" | "skin" | "dark" | "unknown";
 
 export interface Pt { x: number; y: number }
 
 const HEX: Record<CubeColour, string> = {
   white: "#f8fafc", yellow: "#facc15", red: "#ef4444", orange: "#fb923c",
-  green: "#22c55e", blue: "#3b82f6", skin: "#d8a878", unknown: "#94a3b8",
+  green: "#22c55e", blue: "#3b82f6", skin: "#d8a878", dark: "#1e293b", unknown: "#94a3b8",
 };
 export const colourHex = (c: CubeColour) => HEX[c];
 
@@ -48,8 +48,12 @@ function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
 export function classifyColour(rgb: [number, number, number]): CubeColour {
   const [h, s, v] = rgbToHsv(rgb[0], rgb[1], rgb[2]);   // v already in 0..1
   if (s < 0.16 && v > 0.55) return "white";
-  // skin / beige / brown: warm hue, not-too-saturated, spanning shadowed→bright
-  if (h >= 6 && h <= 50 && s >= 0.15 && s <= 0.62 && v >= 0.18 && v <= 0.93) return "skin";
+  // very dark = black / dark-brown → hair or deep shadow, never a lit sticker
+  if (v < 0.25) return "dark";
+  // dark-brown hair that isn't quite black: warm, low-ish sat, still fairly dark
+  if (h >= 6 && h <= 45 && s <= 0.55 && v < 0.42) return "dark";
+  // skin / beige: warm hue, not-too-saturated, mid→bright
+  if (h >= 6 && h <= 50 && s >= 0.15 && s <= 0.62 && v >= 0.25 && v <= 0.93) return "skin";
   if (s < 0.22) return v > 0.5 ? "white" : "unknown";   // greyish, not a vivid sticker
   if (h < 12 || h >= 345) return "red";
   if (h < 42) return "orange";
