@@ -8,7 +8,7 @@
 // and anything bleeding to the image border.
 
 import type { Point2 } from "../types";
-import { convexHull, minAreaRect, polygonArea, pointInPoly, dist } from "../utils/geometry";
+import { convexHull, minAreaRect, polygonArea, pointInPoly, dist, squareScore } from "../utils/geometry";
 
 export interface Shape {
   corners: Point2[]; // 4 corners, ordered TL,TR,BR,BL
@@ -136,7 +136,11 @@ export class ShapeDetector {
       if (mask[i] && mask[i - 1] && mask[i + 1] && mask[i - w] && mask[i + w]) er[i] = 1;
     }
     const vis = new Uint8Array(frame), stack: number[] = [], shapes: Shape[] = [];
-    const minArea = frame * 0.0006, maxArea = frame * 0.10;
+    // maxArea raised 0.10→0.40: a SOLVED uniform face is ONE big blob (no internal
+    // gaps segment it); it used to be discarded here before any split could run, so
+    // the white pass returned zero cells exactly when the face is most uniform. Now
+    // a large near-square blob is subdivided into its 3×3 cells (FATAL fix).
+    const minArea = frame * 0.0006, maxArea = frame * 0.7, unitArea = frame * 0.10;
     for (let s0 = 0; s0 < frame; s0++) {
       if (!er[s0] || vis[s0]) continue;
       vis[s0] = 1; stack.length = 0; stack.push(s0);
@@ -161,6 +165,23 @@ export class ShapeDetector {
       let cx = 0, cy = 0; for (const c of rect.corners) { cx += c.x; cy += c.y; }
       const center = { x: cx / 4, y: cy / 4 };
       if (region && !pointInPoly(center, region)) continue;
+      // FATAL fix: a big near-square white blob is a merged solved FACE → subdivide
+      // into its 3×3 cells (bilinear over the rect) instead of emitting one giant
+      // quad. Only when clearly square (squareScore high) so a lone wall square is
+      // not fabricated into a face.
+      if (area > unitArea && aspect < 1.35 && fill > 0.7 && squareScore(rect.corners) > 0.72) {
+        const [P0, P1, P2, P3] = rect.corners;
+        const at = (u: number, v: number): Point2 => ({
+          x: (1 - u) * (1 - v) * P0.x + u * (1 - v) * P1.x + u * v * P2.x + (1 - u) * v * P3.x,
+          y: (1 - u) * (1 - v) * P0.y + u * (1 - v) * P1.y + u * v * P2.y + (1 - u) * v * P3.y,
+        });
+        for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+          const c0 = at(i / 3, j / 3), c1 = at((i + 1) / 3, j / 3), c2 = at((i + 1) / 3, (j + 1) / 3), c3 = at(i / 3, (j + 1) / 3);
+          shapes.push({ corners: [c0, c1, c2, c3], center: { x: (c0.x + c1.x + c2.x + c3.x) / 4, y: (c0.y + c1.y + c2.y + c3.y) / 4 }, area: area / 9, fill });
+        }
+        continue;
+      }
+      if (area > unitArea) continue;   // large but not a clean square → not a facelet
       // DARK-BORDER test: a real facelet is ringed by the dark inter-sticker plastic
       // gap (and coloured neighbours read darker than white); a white wall/furniture
       // panel is surrounded by more bright pixels. Reject a blob with essentially NO
