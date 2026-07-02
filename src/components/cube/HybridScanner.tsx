@@ -22,6 +22,7 @@ export default function HybridScanner() {
   const grabberRef = useRef<FrameGrabber | null>(null);
   const netRef = useRef<CubeNet | null>(null);
   const shapeRef = useRef<ShapeDetector | null>(null);
+  const cropRef = useRef<HTMLCanvasElement | null>(null);   // high-res zone crop
   const poseRef = useRef<{ q: Quat; t: number[]; k: number[] } | null>(null);   // filtered 3D pose (k=[f,fy,cx,cy,s])
   const coastRef = useRef<{ corners: Point2[]; edges: [number, number][]; ttl: number } | null>(null); // hold last pose through dropouts
   const rafRef = useRef(0);
@@ -89,9 +90,35 @@ export default function HybridScanner() {
       ctx.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0); ctx.setLineDash([]);
     }
 
-    // ---- CLASSICAL sticker detection INSIDE the ML zone → geometric cube pose ----
-    // 125 (vs 150 offline): webcam frames are noisier/blurrier — catch more stickers.
-    const shapes = shapeRef.current!.detect(image, 125, region);
+    // ---- CLASSICAL sticker detection on a HIGH-RES crop of the ML zone ----
+    // At 360px full-frame each sticker is only ~15px → colour-edge quads get
+    // missed (live counter stuck at 4-6 even with 9 visible). Crop the zone from
+    // the NATIVE video (720p+): stickers become ~3× bigger → far better recall.
+    let shapes = shapeRef.current!.detect(image, 125, region);
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (vw > W * 1.3) {
+      const zx = Math.max(0, (rx0 / W) * vw), zy = Math.max(0, (ry0 / H) * vh);
+      const zw = Math.min(vw - zx, ((rx1 - rx0) / W) * vw), zh = Math.min(vh - zy, ((ry1 - ry0) / H) * vh);
+      if (zw > 16 && zh > 16) {
+        const cw = 360, ch = Math.max(48, Math.round((cw * zh) / zw));
+        const cc = cropRef.current!;
+        cc.width = cw; cc.height = ch;
+        const cctx = cc.getContext("2d", { willReadFrequently: true })!;
+        cctx.drawImage(video, zx, zy, zw, zh, 0, 0, cw, ch);
+        const cropImg = cctx.getImageData(0, 0, cw, ch);
+        const cropRegion: Point2[] = [{ x: 0, y: 0 }, { x: cw, y: 0 }, { x: cw, y: ch }, { x: 0, y: ch }];
+        const hi = shapeRef.current!.detect(cropImg, 125, cropRegion);
+        if (hi.length > shapes.length) {   // keep whichever scale found more
+          const sx = (rx1 - rx0) / cw, sy = (ry1 - ry0) / ch;
+          shapes = hi.map((s) => ({
+            corners: s.corners.map((p) => ({ x: rx0 + p.x * sx, y: ry0 + p.y * sy })) as [Point2, Point2, Point2, Point2],
+            center: { x: rx0 + s.center.x * sx, y: ry0 + s.center.y * sy },
+            area: s.area * sx * sy,
+            fill: s.fill,
+          }));
+        }
+      }
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pose = shapes.length >= 3 ? cubePoseFromStickers(shapes as any, W, H) : null;
 
@@ -191,6 +218,7 @@ export default function HybridScanner() {
       await net.load("/models/cube_detector.onnx");   // iter4
       netRef.current = net;
       shapeRef.current = new ShapeDetector();
+      cropRef.current = document.createElement("canvas");
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
