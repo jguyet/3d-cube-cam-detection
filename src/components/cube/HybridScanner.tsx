@@ -7,6 +7,7 @@ import { ShapeDetector, type Shape } from "@/lib/rubik-detector/core/ShapeDetect
 import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
 import { sampleQuadRGB, classifyColour, colourHex, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 import { stabiliseZone, type Zone } from "@/lib/ml/temporalStabilise";
+import { ShapeMemory } from "@/lib/ml/shapeMemory";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -27,6 +28,7 @@ export default function HybridScanner() {
   const shapeRef = useRef<ShapeDetector | null>(null);
   const cropRef = useRef<HTMLCanvasElement | null>(null);   // high-res zone crop
   const memRef = useRef<ColourMemory | null>(null);         // learned cube palette
+  const shapeMemRef = useRef<ShapeMemory | null>(null);     // learned sticker shape profile (FP rejection)
   const frameRef = useRef(0);
   const lastFaceRef = useRef<{ center: CubeColour; cells: CubeColour[]; known: number } | null>(null);
   // accumulated cube state: 6 faces keyed by centre colour → their 9 facelets
@@ -226,6 +228,15 @@ export default function HybridScanner() {
       });
     }
 
+    // ---- LEARNED SHAPE GATE: reject quads geometrically inconsistent with this
+    // cube's learned sticker profile (solidity/aspect/corner-angles) — kills
+    // out-of-cube false positives that slip past colour/size. Loose until learned.
+    let nShape = 0;
+    const shapeMem = shapeMemRef.current;
+    if (shapeMem && shapeMem.ready()) {
+      shapes = shapes.filter((s) => { if (shapeMem.plausible(s)) return true; nShape++; return false; });
+    }
+
     // ---- STICKER HISTORY: merge this frame's detections into short-lived tracks
     // (TTL ~8 frames). A sticker missed on one frame keeps feeding the links.
     const TTL = 12;
@@ -268,6 +279,15 @@ export default function HybridScanner() {
       const c = cxy(lat.surface), sz = diag(lat.surface);
       if (lattices.some((o) => Math.hypot(cxy(o.surface).x - c.x, cxy(o.surface).y - c.y) < 0.5 * Math.max(sz, diag(o.surface)))) continue;
       lattices.push(lat);
+    }
+    // LEARN the sticker shape profile from stickers CONFIRMED in a coherent grid
+    // (guaranteed real) → tightens the FP gate over time. Match tracked shape by
+    // centre proximity (tracked carries area/fill; lattice centres carry corners).
+    if (shapeMem) {
+      for (const lat of lattices) if (lat.gridCoherent) for (const c of lat.centres) {
+        const sh = tracked.find((t) => Math.hypot(t.center.x - c.x, t.center.y - c.y) < 6);
+        if (sh) shapeMem.learn(sh);
+      }
     }
     let nLinks = 0, nFound = 0;
     const mem = memRef.current;
@@ -498,12 +518,13 @@ export default function HybridScanner() {
     }
 
     // persist the learned palette every ~90 frames
-    if (memRef.current && (++frameRef.current % 90 === 0)) memRef.current.save();
+    if ((++frameRef.current % 90 === 0)) { memRef.current?.save(); shapeMemRef.current?.save(); }
 
     ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 300, 24);
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
     const pal = memRef.current ? memRef.current.ready() : 0;
-    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers${nFound ? `+${nFound}` : ""} · palette ${pal}/6${nSkin ? ` · ${nSkin} peau` : ""}`, 14, 25);
+    const shpReady = shapeMemRef.current?.ready() ? "✓" : "…";
+    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stk${nFound ? `+${nFound}` : ""} · palette ${pal}/6 · forme ${shpReady}${nShape ? ` −${nShape}FP` : ""}${nSkin ? ` · ${nSkin} peau` : ""}`, 14, 25);
   };
 
   const start = async () => {
@@ -515,6 +536,7 @@ export default function HybridScanner() {
       shapeRef.current = new ShapeDetector();
       cropRef.current = document.createElement("canvas");
       const mem = new ColourMemory(); mem.load(); memRef.current = mem;   // recall this cube's palette
+      const shp = new ShapeMemory(); shp.load(); shapeMemRef.current = shp;   // recall this cube's sticker shape profile
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
@@ -527,7 +549,7 @@ export default function HybridScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; zoneRef.current = null; activeRef.current = false; presMissRef.current = 0; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); shapeMemRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; zoneRef.current = null; activeRef.current = false; presMissRef.current = 0; setStatus("idle"); };
 
   // capture the currently visible dominant face into the cube state, keyed by its
   // centre colour (the centre identifies the face). Merges with any prior read of
@@ -594,9 +616,9 @@ export default function HybridScanner() {
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
           <input type="checkbox" checked={findMissing} onChange={(e) => setFindMissing(e.target.checked)} /> chercher étiquettes manquantes
         </label>
-        <button onClick={() => { try { localStorage.removeItem("rubix-palette"); } catch { } if (memRef.current) memRef.current.refs = {}; }}
+        <button onClick={() => { try { localStorage.removeItem("rubix-palette"); localStorage.removeItem("rubix-shape"); } catch { } if (memRef.current) memRef.current.refs = {}; shapeMemRef.current = new ShapeMemory(); }}
           className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">
-          oublier la palette
+          oublier palette + forme
         </button>
       </div>
 
