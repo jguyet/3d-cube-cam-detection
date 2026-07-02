@@ -221,7 +221,7 @@ export default function HybridScanner() {
       const medSide = sides[sides.length >> 1];
       shapes = shapes.filter((s) => {
         const r = Math.sqrt(Math.max(1, s.area)) / medSide;
-        if (r < 0.5 || r > 2.1) { nSize++; return false; }
+        if (r < 0.63 || r > 1.45) { nSize++; return false; }   // tight: drop merged blobs on uniform faces
         return true;
       });
     }

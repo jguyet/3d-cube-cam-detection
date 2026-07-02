@@ -40,7 +40,7 @@ export function detectStickers(det: ShapeDetector, image: ImageData): { shapes: 
   if (shapes.length >= 5) {
     const sd = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
     const med = sd[sd.length >> 1];
-    shapes = shapes.filter((s) => { const r = Math.sqrt(Math.max(1, s.area)) / med; return r >= 0.5 && r <= 2.1; });
+    shapes = shapes.filter((s) => { const r = Math.sqrt(Math.max(1, s.area)) / med; return r >= 0.63 && r <= 1.45; });   // tight: drop merged blobs on uniform faces
   }
   return { shapes, edgeCount, whiteCount };
 }
