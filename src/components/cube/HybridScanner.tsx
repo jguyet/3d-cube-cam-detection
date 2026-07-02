@@ -127,6 +127,18 @@ export default function HybridScanner() {
         }
       }
     }
+    // ---- WHITE PASS: the edge detector misses glared/desaturated white facelets,
+    // so also detect them by a brightness+low-saturation mask, and merge any that
+    // the edge pass didn't already find (dedupe by centre distance).
+    {
+      const whites = shapeRef.current!.detectWhite(image, region);
+      const near = (a: Point2, b: Point2, s: number) => Math.hypot(a.x - b.x, a.y - b.y) < 0.6 * s;
+      for (const wsh of whites) {
+        const side = Math.sqrt(Math.max(1, wsh.area));
+        if (!shapes.some((s) => near(s.center, wsh.center, side))) shapes.push(wsh);
+      }
+    }
+
     // ---- COLOUR GATE: drop quads whose interior is SKIN (beige/brown finger) or
     // DARK (black / dark-brown = hair or deep shadow) — neither is a lit sticker
     // (user's idea). Cleans the links of non-cube quads.
@@ -136,6 +148,22 @@ export default function HybridScanner() {
       if (rgb) { const c = classifyColour(rgb); if (c === "skin" || c === "dark") { nSkin++; return false; } }
       return true;
     });
+
+    // ---- SIZE GATE (user's insight): on one face every sticker is ~the same
+    // size, so a quad whose side is far from the median is NOT a facelet (merged
+    // region, background chunk, fragment). Band is wide enough to tolerate the
+    // perspective size difference between two visible faces. Needs enough quads
+    // for a trustworthy median.
+    let nSize = 0;
+    if (shapes.length >= 5) {
+      const sides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
+      const medSide = sides[sides.length >> 1];
+      shapes = shapes.filter((s) => {
+        const r = Math.sqrt(Math.max(1, s.area)) / medSide;
+        if (r < 0.5 || r > 2.1) { nSize++; return false; }
+        return true;
+      });
+    }
 
     // ---- STICKER HISTORY: merge this frame's detections into short-lived tracks
     // (TTL ~8 frames). A sticker missed on one frame keeps feeding the links.
@@ -165,69 +193,31 @@ export default function HybridScanner() {
       ctx.closePath(); ctx.stroke();
     }
 
-    // ---- LIAISONS (primary display): connect the detected sticker centres to
-    // their grid NEIGHBOURS — coherent cube-structure links, nothing invented.
-    // Solid green = adjacent stickers; dashed = same row/col with one missing cell.
+    // ---- LIAISONS (primary display): connect DETECTED sticker centres to their
+    // grid neighbours — coherent cube-structure links, nothing invented/inferred.
+    // Solid green = adjacent; dashed = same row/col skipping one missing cell.
     const lattices = faceLatticesFromStickers(tracked as never[]);
     let nLinks = 0;
-    // sample a lattice cell's colour content → recover PARTIALLY-HIDDEN stickers:
-    // the homography says where the cell is; if enough pixels inside are a vivid
-    // colour (or clean white), the sticker is there — just occluded by a finger.
-    // Is there a sticker in this grid cell? A vivid colour OR a clean-ish WHITE
-    // (bright, low saturation) counts — the white test is loosened because live
-    // white facelets glare/desaturate and the edge detector often misses them.
-    const cellHasSticker = (lat: (typeof lattices)[0], gx: number, gy: number): boolean => {
-      const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
-      let hit = 0, n = 0;
-      for (let u = 0.2; u <= 0.85; u += 0.16) for (let v = 0.2; v <= 0.85; v += 0.16) {
-        const x = Math.round((1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x);
-        const y = Math.round((1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y);
-        if (x < 0 || y < 0 || x >= W || y >= H) continue;
-        const i = (y * W + x) * 4, r = image.data[i], g = image.data[i + 1], b = image.data[i + 2];
-        const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-        const sat = mx > 0 ? (mx - mn) / mx : 0;
-        if ((sat > 0.45 && mx > 70) || (mx > 150 && sat < 0.30)) hit++;   // vivid OR bright-white
-        n++;
-      }
-      return n > 0 && hit / n >= 0.33;
-    };
-    const cellColour = (lat: (typeof lattices)[0], gx: number, gy: number) => {
-      const q = [lat.nodes[gx][gy], lat.nodes[gx + 1][gy], lat.nodes[gx + 1][gy + 1], lat.nodes[gx][gy + 1]];
-      const rgb = sampleQuadRGB(q, image.data, W, H);
-      return rgb ? colourHex(classifyColour(rgb)) : "#00ff78";
-    };
     for (const lat of lattices) {
-      // augment with cells recovered by colour sampling (missed by the edge
-      // detector — typically WHITE facelets, or a sticker occluded by a finger)
-      const cents: { x: number; y: number; gx: number; gy: number; partial?: boolean }[] = [...lat.centres];
-      for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
-        if (lat.filled[gx][gy]) continue;
-        if (!cellHasSticker(lat, gx, gy)) continue;
-        const A = lat.nodes[gx][gy], C = lat.nodes[gx + 1][gy + 1], B = lat.nodes[gx + 1][gy], D = lat.nodes[gx][gy + 1];
-        cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, partial: true });
-      }
+      const cents = lat.centres;
       for (let a = 0; a < cents.length; a++) for (let b = a + 1; b < cents.length; b++) {
         const A = cents[a], B = cents[b];
         const dgx = Math.abs(A.gx - B.gx), dgy = Math.abs(A.gy - B.gy);
-        if (dgx + dgy === 1) {                                   // direct neighbours
+        if (dgx + dgy === 1) {
           ctx.setLineDash([]); ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(0,255,120,0.9)";
-        } else if ((dgx === 2 && dgy === 0) || (dgx === 0 && dgy === 2)) {  // skip a missing cell
+        } else if ((dgx === 2 && dgy === 0) || (dgx === 0 && dgy === 2)) {
           ctx.setLineDash([6, 5]); ctx.lineWidth = 1.8; ctx.strokeStyle = "rgba(0,255,120,0.55)";
         } else continue;
         ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); nLinks++;
       }
       ctx.setLineDash([]);
-      for (const c0 of cents) {
-        // every cell painted with its READ Rubik colour (white facelets included);
-        // recovered cells get a thin white ring to mark them as inferred.
+      for (const c0 of cents) {   // dot = detected sticker, painted its Rubik colour
+        const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
         ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = cellColour(lat, c0.gx, c0.gy); ctx.fill();
-        ctx.lineWidth = c0.partial ? 2 : 1.5;
-        ctx.strokeStyle = c0.partial ? "#ffffff" : "#000";   // white ring = inferred, black ring = detected
-        ctx.stroke();
+        ctx.fillStyle = rgb ? colourHex(classifyColour(rgb)) : "#00ff78"; ctx.fill();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = "#000"; ctx.stroke();
       }
-      // optional extrapolated 3×3 grid (off by default)
-      if (showLatticeRef.current) {
+      if (showLatticeRef.current) {   // optional extrapolated 3×3 grid (off by default)
         ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,140,0,0.7)";
         for (let u = 0; u < 4; u++) {
           ctx.beginPath(); ctx.moveTo(lat.nodes[u][0].x, lat.nodes[u][0].y); ctx.lineTo(lat.nodes[u][3].x, lat.nodes[u][3].y); ctx.stroke();
@@ -292,7 +282,7 @@ export default function HybridScanner() {
 
     ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 280, 24);
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
-    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers · ${lattices.length} face(s)${nSkin ? ` · ${nSkin} doigt(s) rejeté(s)` : ""}`, 14, 25);
+    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers · ${lattices.length} face(s)${nSkin ? ` · ${nSkin} peau/cheveux` : ""}${nSize ? ` · ${nSize} hors-taille` : ""}`, 14, 25);
   };
 
   const start = async () => {

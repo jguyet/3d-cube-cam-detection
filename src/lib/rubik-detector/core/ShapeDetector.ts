@@ -115,6 +115,57 @@ export class ShapeDetector {
     return shapes.filter((s) => this.movingShape(s, fg, w, h));
   }
 
+  // WHITE facelets are the hardest for the edge pass: they glare, desaturate, and
+  // their outer border blends into a light background so the region bleeds out and
+  // is dropped. Detect them directly by a brightness+low-saturation MASK instead
+  // of by edges. Erode 1px to break the thin bridges where the dark gap between two
+  // whites is overexposed, then take connected components that pass the shape gate.
+  detectWhite(img: ImageData, region?: import("../types").Point2[]): Shape[] {
+    const px = img.data, w = img.width, h = img.height, frame = w * h;
+    const mask = new Uint8Array(frame);
+    for (let i = 0; i < frame; i++) {
+      const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const sat = mx > 0 ? (mx - mn) / mx : 0;
+      if (mx > 150 && sat < 0.28) mask[i] = 1;      // bright & near-neutral = white
+    }
+    // erode by 1 (4-neighbour) → separate whites bridged by a washed-out gap
+    const er = new Uint8Array(frame);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (mask[i] && mask[i - 1] && mask[i + 1] && mask[i - w] && mask[i + w]) er[i] = 1;
+    }
+    const vis = new Uint8Array(frame), stack: number[] = [], shapes: Shape[] = [];
+    const minArea = frame * 0.0006, maxArea = frame * 0.10;
+    for (let s0 = 0; s0 < frame; s0++) {
+      if (!er[s0] || vis[s0]) continue;
+      vis[s0] = 1; stack.length = 0; stack.push(s0);
+      const pts: Point2[] = []; let border = 0;
+      while (stack.length) {
+        const n = stack.pop()!, nx = n % w, ny = (n / w) | 0;
+        pts.push({ x: nx, y: ny });
+        if (nx === 0 || ny === 0 || nx === w - 1 || ny === h - 1) border++;
+        if (nx + 1 < w) { const m = n + 1; if (er[m] && !vis[m]) { vis[m] = 1; stack.push(m); } }
+        if (nx - 1 >= 0) { const m = n - 1; if (er[m] && !vis[m]) { vis[m] = 1; stack.push(m); } }
+        if (ny + 1 < h) { const m = n + w; if (er[m] && !vis[m]) { vis[m] = 1; stack.push(m); } }
+        if (ny - 1 >= 0) { const m = n - w; if (er[m] && !vis[m]) { vis[m] = 1; stack.push(m); } }
+      }
+      const area = pts.length;
+      if (area < minArea || area > maxArea || border > 6) continue;
+      const rect = minAreaRect(convexHull(pts));
+      if (!rect) continue;
+      const fill = area / (rect.area || 1);
+      const s1 = dist(rect.corners[0], rect.corners[1]), s2 = dist(rect.corners[1], rect.corners[2]);
+      const aspect = Math.max(s1, s2) / (Math.min(s1, s2) || 1);
+      if (fill < 0.55 || aspect > 1.9) continue;      // whites are near-square
+      let cx = 0, cy = 0; for (const c of rect.corners) { cx += c.x; cy += c.y; }
+      const center = { x: cx / 4, y: cy / 4 };
+      if (region && !pointInPoly(center, region)) continue;
+      shapes.push({ corners: rect.corners, center, area, fill });
+    }
+    return shapes;
+  }
+
   // Foreground mask via background subtraction. Returns null until the model is
   // seeded. Updates the background only where there is no motion, so the moving
   // cube never bakes into it.
