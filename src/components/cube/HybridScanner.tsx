@@ -29,6 +29,9 @@ export default function HybridScanner() {
   const cropRef = useRef<HTMLCanvasElement | null>(null);   // high-res zone crop
   const memRef = useRef<ColourMemory | null>(null);         // learned cube palette
   const shapeMemRef = useRef<ShapeMemory | null>(null);     // learned sticker shape profile (FP rejection)
+  // PAST-RESULT prior: per face (keyed by centre colour) remember the last cell
+  // colours, so an occluded cell shows its last-known colour instead of "?".
+  const faceMemRef = useRef<Map<string, { cells: CubeColour[]; ttl: number }>>(new Map());
   const frameRef = useRef(0);
   const lastFaceRef = useRef<{ center: CubeColour; cells: CubeColour[]; known: number } | null>(null);
   // accumulated cube state: 6 faces keyed by centre colour → their 9 facelets
@@ -40,6 +43,7 @@ export default function HybridScanner() {
   const tracksRef = useRef<{ shape: TrackedShape; ttl: number }[]>([]);
   const coastRef = useRef<{ corners: Point2[]; edges: [number, number][]; ttl: number } | null>(null); // hold last pose through dropouts
   const zoneRef = useRef<Zone | null>(null);                // temporally-stabilised ML zone
+  const sizeRef = useRef<number | null>(null);              // smoothed expected sticker side (no abrupt switch)
   const activeRef = useRef(false);                          // presence hysteresis state
   const presMissRef = useRef(0);
   const rafRef = useRef(0);
@@ -103,7 +107,7 @@ export default function HybridScanner() {
     } else if (presence < PRESENCE_OFF) {
       if (++presMissRef.current >= 4) {
         activeRef.current = false; presMissRef.current = 0;
-        zoneRef.current = null; poseRef.current = null; coastRef.current = null;
+        zoneRef.current = null; poseRef.current = null; coastRef.current = null; sizeRef.current = null;
         return;
       }
     } else presMissRef.current = 0;
@@ -212,20 +216,28 @@ export default function HybridScanner() {
     // perspective size spread of a normal gapped cube).
     if (splitRef.current) shapes = shapeRef.current!.splitMerged(shapes);
 
-    // ---- SIZE GATE (user's insight): on one face every sticker is ~the same
-    // size, so a quad whose side is far from the median is NOT a facelet (merged
-    // region, background chunk, fragment). Band is wide enough to tolerate the
-    // perspective size difference between two visible faces. Needs enough quads
-    // for a trustworthy median.
+    // ---- SIZE GATE with TEMPORAL SIZE MEMORY (user's insight): sticker size can't
+    // switch abruptly — it drifts SMOOTHLY as the cube moves nearer/farther. So the
+    // reference size is a SMOOTHED memory (EMA), not just this frame's median: a quad
+    // whose size jumps far from the remembered size is a false detection/merged blob.
+    // The memory drifts (allows real distance change) but rejects instant switches.
     let nSize = 0;
-    if (shapes.length >= 5) {
-      const sides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
-      const medSide = sides[sides.length >> 1];
+    const curMed = shapes.length >= 3
+      ? shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b)[shapes.length >> 1]
+      : null;
+    const ref = sizeRef.current ?? curMed;   // remembered expected side (else this frame's median)
+    if (ref && shapes.length >= 3) {
       shapes = shapes.filter((s) => {
-        const r = Math.sqrt(Math.max(1, s.area)) / medSide;
-        if (r < 0.63 || r > 1.45) { nSize++; return false; }   // tight: drop merged blobs on uniform faces
+        const r = Math.sqrt(Math.max(1, s.area)) / ref;
+        if (r < 0.6 || r > 1.6) { nSize++; return false; }   // outside the smooth band → not a facelet now
         return true;
       });
+    }
+    // update the smoothed reference from the ACCEPTED stickers (median), slowly, so
+    // it tracks distance changes without ever jumping.
+    if (shapes.length >= 3) {
+      const m = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b)[shapes.length >> 1];
+      sizeRef.current = sizeRef.current == null ? m : sizeRef.current + 0.15 * (m - sizeRef.current);
     }
 
     // ---- LEARNED SHAPE GATE: reject quads geometrically inconsistent with this
@@ -291,10 +303,12 @@ export default function HybridScanner() {
     }
     let nLinks = 0, nFound = 0;
     const mem = memRef.current;
+    // expire stale face memories (a face not seen for ~8s)
+    for (const k of [...faceMemRef.current.keys()]) { const e = faceMemRef.current.get(k)!; if (--e.ttl <= 0) faceMemRef.current.delete(k); }
     for (let li = 0; li < lattices.length; li++) {
       const lat = lattices[li];
       // dot = detected sticker, painted its Rubik colour; learn the palette
-      type Cent = { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; occluded?: boolean };
+      type Cent = { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean; occluded?: boolean; remembered?: boolean };
       const cents: Cent[] = lat.centres.map((c0) => {
         // sample the WHOLE sticker quad (median over ~25 interior points), not a
         // single centre pixel — robust to glare, logos and edge noise.
@@ -393,6 +407,10 @@ export default function HybridScanner() {
       // stickers (inside their grid bounding box) is a real facelet under a finger →
       // emit it as "unknown" so the face structure is complete. Off-cube cells (grid
       // spilling onto the background) fall OUTSIDE the box and are not emitted.
+      // PAST-RESULT prior: if this face is centre-anchored (grid offset stable) and
+      // its centre colour is known, recall its last cell colours for occluded cells.
+      const centreName = lat.centerAnchored ? cents.find((c) => c.gx === 1 && c.gy === 1)?.name : undefined;
+      const remembered = centreName && centreName !== "unknown" ? faceMemRef.current.get(centreName) : undefined;
       if (lat.gridCoherent) {
         const gxs = lat.centres.map((c) => c.gx), gys = lat.centres.map((c) => c.gy);
         if (gxs.length) {
@@ -400,9 +418,17 @@ export default function HybridScanner() {
           for (let gx = bx0; gx <= bx1; gx++) for (let gy = by0; gy <= by1; gy++) {
             if (lat.filled[gx][gy] || cents.some((c) => c.gx === gx && c.gy === gy)) continue;
             const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
-            cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, name: "unknown", found: true, occluded: true });
+            const rec = remembered?.cells[gy * 3 + gx];
+            const useRec = rec && rec !== "unknown";
+            cents.push({ x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4, gx, gy, name: useRec ? rec : "unknown", found: true, occluded: true, remembered: useRec });
           }
         }
+      }
+      // update the face memory with this frame's directly-read cells (not occluded)
+      if (centreName && centreName !== "unknown" && lat.centerAnchored) {
+        const entry = faceMemRef.current.get(centreName) ?? { cells: Array(9).fill("unknown") as CubeColour[], ttl: 0 };
+        for (const c of cents) if (!c.occluded && c.gx >= 0 && c.gx < 3 && c.gy >= 0 && c.gy < 3) entry.cells[c.gy * 3 + c.gx] = c.name;
+        entry.ttl = 120; faceMemRef.current.set(centreName, entry);
       }
 
       for (let a = 0; a < cents.length; a++) for (let b = a + 1; b < cents.length; b++) {
@@ -417,7 +443,13 @@ export default function HybridScanner() {
       }
       ctx.setLineDash([]);
       for (const c0 of cents) {
-        if (c0.occluded) {   // grey "?" — real facelet hidden by a finger/glare
+        if (c0.occluded && c0.remembered) {   // last-known colour recalled from memory: colour + amber dashed ring
+          ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = colourHex(c0.name); ctx.globalAlpha = 0.7; ctx.fill(); ctx.globalAlpha = 1;
+          ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.strokeStyle = "#f59e0b"; ctx.stroke(); ctx.setLineDash([]);
+          continue;
+        }
+        if (c0.occluded) {   // grey "?" — real facelet hidden, no memory yet
           ctx.beginPath(); ctx.arc(c0.x, c0.y, 6, 0, Math.PI * 2);
           ctx.fillStyle = "rgba(120,120,120,0.7)"; ctx.fill();
           ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.strokeStyle = "#1e293b"; ctx.stroke(); ctx.setLineDash([]);
@@ -549,7 +581,7 @@ export default function HybridScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); shapeMemRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; zoneRef.current = null; activeRef.current = false; presMissRef.current = 0; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); shapeMemRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; zoneRef.current = null; sizeRef.current = null; faceMemRef.current.clear(); activeRef.current = false; presMissRef.current = 0; setStatus("idle"); };
 
   // capture the currently visible dominant face into the cube state, keyed by its
   // centre colour (the centre identifies the face). Merges with any prior read of
