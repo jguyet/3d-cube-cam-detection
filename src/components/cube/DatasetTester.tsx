@@ -6,7 +6,7 @@ import { analyze, type AnalyzeResult } from "@/lib/ml/hybridAnalyze";
 import { colourHex } from "@/lib/ml/stickerColor";
 import { DatasetEngine, reseed, type Sample } from "@/lib/dataset/engine";
 
-const WORK_W = 480;
+const WORK_W = 640;   // higher res → faint inter-sticker gaps survive downscale → more stable detection on uniform faces
 const GEN_W = 480, GEN_H = 270;
 const ANNO_KEY = "rubix-dataset-annos";
 
