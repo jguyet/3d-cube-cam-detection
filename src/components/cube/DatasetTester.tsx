@@ -92,9 +92,12 @@ export default function DatasetTester() {
     }
     const cellAnno = annosRef.current[key]?.cells ?? {};
     for (const c of res.cells) {
+      // always a black outer ring so white/cream dots stay visible on light cubes;
+      // completed cells get a blue dashed halo so 9/9 completion is obvious.
       ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, Math.PI * 2);
       ctx.fillStyle = colourHex(c.name); ctx.fill();
-      ctx.lineWidth = c.found ? 2 : 1.5; ctx.strokeStyle = c.found ? "#ffffff" : "#000"; ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = "#000"; ctx.stroke();
+      if (c.found) { ctx.beginPath(); ctx.arc(c.x, c.y, 8.5, 0, Math.PI * 2); ctx.lineWidth = 2; ctx.strokeStyle = "#2563eb"; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]); }
       const a = cellAnno[cellKey(c.li, c.gx, c.gy)];
       if (a) {
         ctx.lineWidth = 2.5; ctx.strokeStyle = a === "ok" ? "#22c55e" : "#ef4444";

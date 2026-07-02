@@ -378,9 +378,8 @@ export default function HybridScanner() {
       for (const c0 of cents) {
         ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
         ctx.fillStyle = colourHex(c0.name); ctx.fill();
-        ctx.lineWidth = c0.found ? 2 : 1.5;
-        ctx.strokeStyle = c0.found ? "#ffffff" : "#000";   // white ring = found in an empty cell
-        ctx.stroke();
+        ctx.lineWidth = 2; ctx.strokeStyle = "#000"; ctx.stroke();   // black ring: visible on white cubes too
+        if (c0.found) { ctx.beginPath(); ctx.arc(c0.x, c0.y, 8.5, 0, Math.PI * 2); ctx.lineWidth = 2; ctx.strokeStyle = "#2563eb"; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]); }
       }
       // dominant face (li===0): expose its 9-cell readout for capture/validation
       if (li === 0) {
