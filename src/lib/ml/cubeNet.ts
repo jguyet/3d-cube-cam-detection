@@ -16,6 +16,7 @@ export interface MLResult {
   faces: number[];                                 // 6 probabilities
   edges: [number, number][];                       // 12 cube edges
   present: number;                                 // 0..1 "a cube is in frame"
+  stickers?: { data: Float32Array; w: number; h: number }; // Model-B density heatmap
 }
 
 // cube edges: corner index i*4+j*2+k, edge = differ in exactly one bit
@@ -86,6 +87,11 @@ export class CubeNet {
     }
     const faces = Array.from(g.slice(8, 14));
     const present = g[14];
-    return { corners, faces, edges: EDGES, present };
+    // optional Model-B sticker-centre density heatmap
+    const stT = out["stickers"];
+    const stickers = stT
+      ? { data: stT.data as Float32Array, h: stT.dims[2] as number, w: stT.dims[3] as number }
+      : undefined;
+    return { corners, faces, edges: EDGES, present, stickers };
   }
 }
