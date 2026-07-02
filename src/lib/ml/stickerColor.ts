@@ -62,3 +62,57 @@ export function classifyColour(rgb: [number, number, number]): CubeColour {
   if (h < 265) return "blue";
   return "red";                                          // magenta wraps to red
 }
+
+// ---- COLOUR MEMORY: a cube always has the SAME six colours, so learn each one's
+// actual appearance from confident detections and classify against THIS cube's
+// palette. Nails the red↔orange split (fixed hue thresholds can't) and gets more
+// certain over time. Persists to localStorage.
+const CHROMATIC: CubeColour[] = ["white", "yellow", "red", "orange", "green", "blue"];
+interface Ref { r: number; g: number; b: number; n: number }
+// brightness-invariant chromaticity (r,g fractions) — separates red from orange
+function chroma(r: number, g: number, b: number): [number, number] { const s = r + g + b + 1e-6; return [r / s, g / s]; }
+
+export class ColourMemory {
+  refs: Partial<Record<CubeColour, Ref>> = {};
+  private alpha = 0.06;           // EMA rate
+  private tol = 0.09;             // max chromaticity distance to trust a learned ref
+
+  // Feed a confident sticker RGB. Skip the ambiguous red↔orange hue band and
+  // low-saturation samples so the learned centroids stay clean.
+  learn(rgb: [number, number, number]): void {
+    const [h, s, v] = rgbToHsv(rgb[0], rgb[1], rgb[2]);
+    const c = classifyColour(rgb);
+    if (c === "skin" || c === "dark" || c === "unknown") return;
+    if (c !== "white" && s < 0.45) return;               // too washed out to trust
+    if (c === "white" && v < 0.55) return;
+    if (h >= 20 && h <= 32) return;                       // red/orange overlap → don't learn
+    const cur = this.refs[c];
+    if (!cur) this.refs[c] = { r: rgb[0], g: rgb[1], b: rgb[2], n: 1 };
+    else { const a = this.alpha; cur.r += a * (rgb[0] - cur.r); cur.g += a * (rgb[1] - cur.g); cur.b += a * (rgb[2] - cur.b); cur.n++; }
+  }
+
+  // Classify against the learned palette; fall back to the fixed heuristic.
+  classify(rgb: [number, number, number]): CubeColour {
+    const fixed = classifyColour(rgb);
+    if (fixed === "skin" || fixed === "dark") return fixed;   // structural — never override
+    const [cr, cg] = chroma(rgb[0], rgb[1], rgb[2]);
+    let best: CubeColour | null = null, bd = Infinity;
+    for (const name of CHROMATIC) {
+      const ref = this.refs[name];
+      if (!ref || ref.n < 4) continue;
+      const [rr, rg] = chroma(ref.r, ref.g, ref.b);
+      const d = Math.hypot(cr - rr, cg - rg);
+      if (d < bd) { bd = d; best = name; }
+    }
+    return best && bd < this.tol ? best : fixed;
+  }
+
+  ready(): number { return CHROMATIC.filter((c) => (this.refs[c]?.n ?? 0) >= 4).length; }
+
+  load(key = "rubix-palette"): void {
+    try { const s = typeof localStorage !== "undefined" && localStorage.getItem(key); if (s) this.refs = JSON.parse(s); } catch { /* ignore */ }
+  }
+  save(key = "rubix-palette"): void {
+    try { if (typeof localStorage !== "undefined") localStorage.setItem(key, JSON.stringify(this.refs)); } catch { /* ignore */ }
+  }
+}

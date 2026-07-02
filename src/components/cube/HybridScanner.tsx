@@ -5,7 +5,7 @@ import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
-import { sampleQuadRGB, classifyColour, colourHex } from "@/lib/ml/stickerColor";
+import { sampleQuadRGB, classifyColour, colourHex, ColourMemory } from "@/lib/ml/stickerColor";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -24,6 +24,8 @@ export default function HybridScanner() {
   const netRef = useRef<CubeNet | null>(null);
   const shapeRef = useRef<ShapeDetector | null>(null);
   const cropRef = useRef<HTMLCanvasElement | null>(null);   // high-res zone crop
+  const memRef = useRef<ColourMemory | null>(null);         // learned cube palette
+  const frameRef = useRef(0);
   const poseRef = useRef<{ q: Quat; t: number[]; k: number[] } | null>(null);   // filtered 3D pose (k=[f,fy,cx,cy,s])
   // sticker HISTORY across frames: recently-seen stickers persist a few frames so
   // the links don't flicker with per-frame detection dropouts
@@ -211,10 +213,13 @@ export default function HybridScanner() {
         ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); nLinks++;
       }
       ctx.setLineDash([]);
+      const mem = memRef.current;
       for (const c0 of cents) {   // dot = detected sticker, painted its Rubik colour
         const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
+        if (rgb && mem) mem.learn(rgb);                                    // remember this cube's colours
+        const col = rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown";
         ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = rgb ? colourHex(classifyColour(rgb)) : "#00ff78"; ctx.fill();
+        ctx.fillStyle = colourHex(col); ctx.fill();
         ctx.lineWidth = 1.5; ctx.strokeStyle = "#000"; ctx.stroke();
       }
       if (showLatticeRef.current) {   // optional extrapolated 3×3 grid (off by default)
@@ -280,9 +285,13 @@ export default function HybridScanner() {
       coastRef.current = null;
     }
 
-    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 280, 24);
+    // persist the learned palette every ~90 frames
+    if (memRef.current && (++frameRef.current % 90 === 0)) memRef.current.save();
+
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 300, 24);
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
-    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers · ${lattices.length} face(s)${nSkin ? ` · ${nSkin} peau/cheveux` : ""}${nSize ? ` · ${nSize} hors-taille` : ""}`, 14, 25);
+    const pal = memRef.current ? memRef.current.ready() : 0;
+    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers · palette ${pal}/6${nSkin ? ` · ${nSkin} peau` : ""}${nSize ? ` · ${nSize} hors-taille` : ""}`, 14, 25);
   };
 
   const start = async () => {
@@ -293,6 +302,7 @@ export default function HybridScanner() {
       netRef.current = net;
       shapeRef.current = new ShapeDetector();
       cropRef.current = document.createElement("canvas");
+      const mem = new ColourMemory(); mem.load(); memRef.current = mem;   // recall this cube's palette
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
@@ -305,7 +315,7 @@ export default function HybridScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; setStatus("idle"); };
 
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
@@ -340,6 +350,10 @@ export default function HybridScanner() {
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
           <input type="checkbox" checked={showCube} onChange={(e) => setShowCube(e.target.checked)} /> cube 3D (cyan)
         </label>
+        <button onClick={() => { try { localStorage.removeItem("rubix-palette"); } catch { } if (memRef.current) memRef.current.refs = {}; }}
+          className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">
+          oublier la palette
+        </button>
       </div>
       <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
         Test hybride : le ML (iter4) localise la <strong>zone</strong> du cube, puis la <strong>silhouette classique</strong>
