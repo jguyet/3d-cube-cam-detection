@@ -585,7 +585,7 @@ function medianDiag(shapes: Shape[]): number {
 export interface FaceLattice {
   nodes: Point2[][];            // [u][v], u,v ∈ 0..3 — the 16 grid nodes in image px
   filled: boolean[][];          // [gx][gy] 3×3 — true where a sticker was DETECTED
-  centres: { x: number; y: number; gx: number; gy: number }[]; // detected sticker centres + grid cell
+  centres: { x: number; y: number; gx: number; gy: number; corners: [Point2, Point2, Point2, Point2] }[]; // detected sticker centres + grid cell + quad
   count: number;                // detected stickers on this face
   stickerFrac: number;          // sticker side / cell pitch (proportion; 1 = no gap)
   surface: [Point2, Point2, Point2, Point2]; // EXACT cube-face outer contour (extrapolated to the physical edge)
@@ -597,12 +597,12 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
     return faces.map((f) => {
       const nodes = [0, 1, 2, 3].map((u) => [0, 1, 2, 3].map((v) => applyH(f.H, { x: u, y: v })));
       const filled = [0, 1, 2].map(() => [false, false, false]);
-      const centres: { x: number; y: number; gx: number; gy: number }[] = [];
+      const centres: FaceLattice["centres"] = [];
       for (const st of f.stickers) {
         if (st.gx < 0 || st.gx > 2 || st.gy < 0 || st.gy > 2) continue;
         filled[st.gx][st.gy] = true;
         const c = lineXPoint(st.shape.corners) || st.shape.center;  // exact centre (diagonals)
-        centres.push({ x: c.x, y: c.y, gx: st.gx, gy: st.gy });
+        centres.push({ x: c.x, y: c.y, gx: st.gx, gy: st.gy, corners: st.shape.corners });
       }
       // MEASURE PROPORTIONS: one grid unit (cell pitch) in px vs the sticker side.
       const O = applyH(f.H, { x: 1, y: 1 });

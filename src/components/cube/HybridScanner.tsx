@@ -235,9 +235,11 @@ export default function HybridScanner() {
       // dot = detected sticker, painted its Rubik colour; learn the palette
       type Cent = { x: number; y: number; gx: number; gy: number; name: CubeColour; found?: boolean };
       const cents: Cent[] = lat.centres.map((c0) => {
-        const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
+        // sample the WHOLE sticker quad (median over ~25 interior points), not a
+        // single centre pixel — robust to glare, logos and edge noise.
+        const rgb = sampleQuadRGB(c0.corners, image.data, W, H);
         if (rgb && mem) mem.learn(rgb);
-        return { ...c0, name: (rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown") as CubeColour };
+        return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: (rgb ? (mem ? mem.classify(rgb) : classifyColour(rgb)) : "unknown") as CubeColour };
       });
 
       // ---- MISSING-STICKER SEARCH: for each empty grid cell, vote over sampled
