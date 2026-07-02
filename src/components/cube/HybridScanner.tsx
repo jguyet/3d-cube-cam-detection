@@ -45,6 +45,9 @@ export default function HybridScanner() {
   const [showCube, setShowCube] = useState(false);          // 3D cube overlay
   const showCubeRef = useRef(false);
   showCubeRef.current = showCube;
+  const [splitBlocks, setSplitBlocks] = useState(false);    // split same-colour blocks (gap-less cubes)
+  const splitRef = useRef(false);
+  splitRef.current = splitBlocks;
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -150,6 +153,12 @@ export default function HybridScanner() {
       if (rgb) { const c = classifyColour(rgb); if (c === "skin" || c === "dark") { nSkin++; return false; } }
       return true;
     });
+
+    // ---- SPLIT MERGED BLOCKS (opt-in, for gap-less cubes): 3 same-colour
+    // facelets in a row are detected as one long rectangle — cut them back into
+    // unit stickers so each counts. Off by default (would over-split under the
+    // perspective size spread of a normal gapped cube).
+    if (splitRef.current) shapes = shapeRef.current!.splitMerged(shapes);
 
     // ---- SIZE GATE (user's insight): on one face every sticker is ~the same
     // size, so a quad whose side is far from the median is NOT a facelet (merged
@@ -349,6 +358,9 @@ export default function HybridScanner() {
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
           <input type="checkbox" checked={showCube} onChange={(e) => setShowCube(e.target.checked)} /> cube 3D (cyan)
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+          <input type="checkbox" checked={splitBlocks} onChange={(e) => setSplitBlocks(e.target.checked)} /> découper blocs même couleur (sans gap)
         </label>
         <button onClick={() => { try { localStorage.removeItem("rubix-palette"); } catch { } if (memRef.current) memRef.current.refs = {}; }}
           className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">

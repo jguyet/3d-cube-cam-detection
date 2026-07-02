@@ -166,6 +166,46 @@ export class ShapeDetector {
     return shapes;
   }
 
+  // On a GAP-LESS cube, adjacent same-colour facelets have no border between them,
+  // so the edge pass merges them into ONE big rectangle (3-in-a-row → a long rect,
+  // 2×2 → a square, …). Split such blocks back into unit cells (user's idea): the
+  // unit side ≈ the median of every shape's SHORT side (a merged block is only
+  // long on one axis, so its short side is still one sticker), then any shape that
+  // spans ~N units on an axis is cut into N. Each cell becomes a real sticker.
+  splitMerged(shapes: Shape[]): Shape[] {
+    if (shapes.length < 3) return shapes;
+    const shortOf = (s: Shape) => Math.min(dist(s.corners[0], s.corners[1]), dist(s.corners[1], s.corners[2]));
+    const shorts = shapes.map(shortOf).sort((a, b) => a - b);
+    const unit = shorts[shorts.length >> 1] || 1;
+    const out: Shape[] = [];
+    for (const s of shapes) {
+      const [TL, TR, BR, BL] = s.corners;
+      const a = dist(TL, TR), b = dist(TL, BL);
+      const long = Math.max(a, b), short = Math.min(a, b);
+      // Only split ELONGATED blocks: the short axis is ~ONE sticker (not a thin
+      // sliver, not a big square) and the long axis is a near-integer N≥2 units
+      // (3 same-colour facelets in a row → a long rectangle). Near-square shapes
+      // and slivers are left alone so we never invent facelets.
+      const n = Math.min(3, Math.round(long / unit));
+      const nearInt = Math.abs(long / unit - n) < 0.33;
+      if (short < 0.72 * unit || short > 1.4 * unit || long / short < 1.9 || n < 2 || !nearInt) { out.push(s); continue; }
+      const na = a >= b ? n : 1, nb = a >= b ? 1 : n;
+      const P = (u: number, v: number): Point2 => ({
+        x: (1 - u) * (1 - v) * TL.x + u * (1 - v) * TR.x + u * v * BR.x + (1 - u) * v * BL.x,
+        y: (1 - u) * (1 - v) * TL.y + u * (1 - v) * TR.y + u * v * BR.y + (1 - u) * v * BL.y,
+      });
+      for (let i = 0; i < na; i++) for (let j = 0; j < nb; j++) {
+        const c0 = P(i / na, j / nb), c1 = P((i + 1) / na, j / nb), c2 = P((i + 1) / na, (j + 1) / nb), c3 = P(i / na, (j + 1) / nb);
+        out.push({
+          corners: [c0, c1, c2, c3],
+          center: { x: (c0.x + c1.x + c2.x + c3.x) / 4, y: (c0.y + c1.y + c2.y + c3.y) / 4 },
+          area: s.area / (na * nb), fill: s.fill,
+        });
+      }
+    }
+    return out;
+  }
+
   // Foreground mask via background subtraction. Returns null until the model is
   // seeded. Updates the background only where there is no motion, so the moving
   // cube never bakes into it.
