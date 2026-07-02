@@ -721,6 +721,36 @@ function extractFacesV2(shapes: Shape[]): Face[] {
     faces.push({ stickers: st, H: Hf, cornersImg: faceCorners(Hf) });
     for (const e of st) remaining.delete(e.idx);
   }
+  // MERGE coplanar sub-grids: the seed homography is sticker-scaled and corner-
+  // anchored, so ONE physical face can come out as two partial grids (the classic
+  // "top-right 4 + bottom-left 4" split, or a lone 2×2). Merge B into A when every
+  // B sticker rectifies through A's grid (small residual = coplanar) and the union
+  // still fits a single 3×3 with no cell collision. Two DIFFERENT cube faces are
+  // not coplanar → the fold gives a large residual → they are never merged.
+  for (let a = 0; a < faces.length; a++) {
+    for (let b = faces.length - 1; b > a; b--) {
+      const HiA = invert3(faces[a].H); if (!HiA) continue;
+      const union = faces[a].stickers.map((s) => ({ idx: s.idx, gx: s.gx, gy: s.gy, shape: s.shape }));
+      let ok = true;
+      for (const s of faces[b].stickers) {
+        const g = applyH(HiA, s.shape.center);
+        const gx = Math.round(g.x - 0.5), gy = Math.round(g.y - 0.5);
+        if (Math.abs(g.x - 0.5 - gx) > 0.33 || Math.abs(g.y - 0.5 - gy) > 0.33) { ok = false; break; }
+        union.push({ idx: s.idx, gx, gy, shape: s.shape });
+      }
+      if (!ok) continue;
+      const xs = union.map((u) => u.gx), ys = union.map((u) => u.gy);
+      const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+      if (maxx - minx > 2 || maxy - miny > 2) continue;      // union doesn't fit one 3×3
+      const cells = new Set<string>(); let collide = false;
+      for (const u of union) { const k = u.gx + ',' + u.gy; if (cells.has(k)) { collide = true; break; } cells.add(k); }
+      if (collide) continue;                                  // same cell twice ⇒ not the same face
+      const st2: FaceSticker[] = union.map((u) => ({ shape: u.shape, idx: u.idx, gx: u.gx - minx, gy: u.gy - miny }));
+      const Hf2 = fitFaceH(st2, faces[a].H); if (!Hf2) continue;
+      faces[a] = { stickers: st2, H: Hf2, cornersImg: faceCorners(Hf2) };
+      faces.splice(b, 1);
+    }
+  }
   return faces.slice(0, 3);
 }
 
