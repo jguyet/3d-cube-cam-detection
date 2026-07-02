@@ -70,10 +70,11 @@ export function analyze(det: ShapeDetector, image: ImageData, opts: AnalyzeOpts 
       const rgb = sampleQuadRGB(c0.corners, image.data, W, H);
       return { x: c0.x, y: c0.y, gx: c0.gx, gy: c0.gy, name: (rgb ? mem.classify(rgb) : "unknown") as CubeColour, li };
     });
-    // white completion (always on) + optional colour completion
+    // completion ONLY on a coherent (non-degenerate) grid — a collapsed homography
+    // would stack all completed cells on one point.
     const half = Math.max(0.18, 0.5 * lat.stickerFrac * 0.9);
     const lo = 0.5 - half, hi = 0.5 + half, step = (hi - lo) / 4;
-    for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
+    if (lat.gridCoherent) for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
       if (lat.filled[gx][gy] || cur.some((c) => c.gx === gx && c.gy === gy)) continue;
       const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
       const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };

@@ -623,7 +623,15 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
       // cells are far bigger than the sticker shapes (rawFrac too small — stickers
       // got spread across skipped cells) or smaller (overlap), the grid does not
       // match the sticker dimensions → the computed cube size is wrong.
-      const gridCoherent = rawFrac >= 0.5 && rawFrac <= 1.08;
+      // …and the grid must not be DEGENERATE: near-collinear/clustered stickers
+      // give an under-determined homography whose node grid collapses on one axis
+      // (completed cells then all land on a single point = garbage). Require both
+      // the horizontal and vertical node spans to be a real multiple of a sticker
+      // and roughly balanced (a face is ~square, not a sliver).
+      const spanX = Math.hypot(nodes[3][0].x - nodes[0][0].x, nodes[3][0].y - nodes[0][0].y);
+      const spanY = Math.hypot(nodes[0][3].x - nodes[0][0].x, nodes[0][3].y - nodes[0][0].y);
+      const nonDegenerate = spanX >= 1.6 * sSide && spanY >= 1.6 * sSide && spanX / spanY <= 3 && spanY / spanX <= 3;
+      const gridCoherent = rawFrac >= 0.5 && rawFrac <= 1.08 && nonDegenerate;
       // The physical cube edge sits beyond the outer stickers by ~half the gap plus
       // the plastic frame border. EXPAND the face quad about its centroid rather
       // than extrapolating the homography to grid [-m,3+m] — projective extrapolation

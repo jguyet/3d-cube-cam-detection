@@ -287,7 +287,7 @@ export default function HybridScanner() {
       // pixels; accept a (possibly PARTIAL) sticker if a LEARNED cube colour wins
       // enough of the votes. The learned palette is the discriminator — skin, hair
       // and background don't match a cube colour, so this stays clean.
-      if (findMissingRef.current) {
+      if (findMissingRef.current && lat.gridCoherent) {
         // Sample ONLY the established sticker footprint (centred, sized by the face's
         // measured stickerFrac) — NOT the whole cell — so we test the sticker area
         // like the detected ones, never the gaps or off-cube margins. lo..hi is the
@@ -334,7 +334,7 @@ export default function HybridScanner() {
       // any empty cell of a formed face that reads bright & neutral is a white
       // facelet. Furniture can never qualify: it never lands on a formed face's
       // grid cell. This is the primary white mechanism.
-      {
+      if (lat.gridCoherent) {
         const half = Math.max(0.18, 0.5 * lat.stickerFrac * 0.9);
         const lo = 0.5 - half, hi = 0.5 + half, step = (hi - lo) / 4;
         for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
