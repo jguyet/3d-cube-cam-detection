@@ -5,6 +5,7 @@ import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
+import { sampleQuadRGB, classifyColour, colourHex } from "@/lib/ml/stickerColor";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -126,6 +127,15 @@ export default function HybridScanner() {
         }
       }
     }
+    // ---- COLOUR GATE: drop quads whose interior is SKIN (beige/brown = a finger,
+    // not a sticker) before they pollute the links (user's idea).
+    let nSkin = 0;
+    shapes = shapes.filter((s) => {
+      const rgb = sampleQuadRGB(s.corners, image.data, W, H);
+      if (rgb && classifyColour(rgb) === "skin") { nSkin++; return false; }
+      return true;
+    });
+
     // ---- STICKER HISTORY: merge this frame's detections into short-lived tracks
     // (TTL ~8 frames). A sticker missed on one frame keeps feeding the links.
     const TTL = 8;
@@ -198,9 +208,13 @@ export default function HybridScanner() {
       }
       ctx.setLineDash([]);
       for (const c0 of cents) {
-        ctx.beginPath(); ctx.arc(c0.x, c0.y, 4, 0, Math.PI * 2);
-        if (c0.partial) { ctx.lineWidth = 2; ctx.strokeStyle = "#00ff78"; ctx.stroke(); }   // hollow = partially hidden
-        else { ctx.fillStyle = "#00ff78"; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = "#000"; ctx.stroke(); }
+        ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
+        if (c0.partial) { ctx.lineWidth = 2; ctx.strokeStyle = "#00ff78"; ctx.stroke(); }   // hollow green = inferred (hidden)
+        else {
+          const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
+          ctx.fillStyle = rgb ? colourHex(classifyColour(rgb)) : "#00ff78";   // dot = detected sticker's Rubik colour
+          ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = "#000"; ctx.stroke();
+        }
       }
       // optional extrapolated 3×3 grid (off by default)
       if (showLatticeRef.current) {
@@ -268,7 +282,7 @@ export default function HybridScanner() {
 
     ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 280, 24);
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
-    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers (hist) · ${lattices.length} face(s)`, 14, 25);
+    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stickers · ${lattices.length} face(s)${nSkin ? ` · ${nSkin} doigt(s) rejeté(s)` : ""}`, 14, 25);
   };
 
   const start = async () => {
