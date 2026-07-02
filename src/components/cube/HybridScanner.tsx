@@ -6,11 +6,13 @@ import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
 import { sampleQuadRGB, classifyColour, colourHex, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
+import { stabiliseZone, type Zone } from "@/lib/ml/temporalStabilise";
 import type { Point2 } from "@/lib/rubik-detector/types";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
-const PRESENCE_MIN = 0.3;
+const PRESENCE_ON = 0.45;   // Schmitt trigger: activate above this…
+const PRESENCE_OFF = 0.25;  // …deactivate below this (after a few frames)
 const VIS_MIN = 0.4;
 
 // Hybrid detector (experimental): iter4 ML gives the cube ZONE, then a CLASSICAL
@@ -35,6 +37,9 @@ export default function HybridScanner() {
   type TrackedShape = { corners: [Point2, Point2, Point2, Point2]; center: Point2; area: number; fill: number };
   const tracksRef = useRef<{ shape: TrackedShape; ttl: number }[]>([]);
   const coastRef = useRef<{ corners: Point2[]; edges: [number, number][]; ttl: number } | null>(null); // hold last pose through dropouts
+  const zoneRef = useRef<Zone | null>(null);                // temporally-stabilised ML zone
+  const activeRef = useRef(false);                          // presence hysteresis state
+  const presMissRef = useRef(0);
   const rafRef = useRef(0);
   const busyRef = useRef(false);
   const histRef = useRef<MLResult[]>([]);
@@ -82,13 +87,24 @@ export default function HybridScanner() {
     if (hist.length > N) hist.shift();
     const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 
+    // ---- PRESENCE HYSTERESIS (Schmitt trigger): activate at ON, deactivate only
+    // after several sustained sub-OFF frames → no on/off blink at a single boundary.
     const presence = median(hist.map((h) => h.present));
-    if (presence < PRESENCE_MIN) {
-      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 168, 26);
-      ctx.fillStyle = "#fca5a5"; ctx.font = "14px system-ui";
-      ctx.fillText(`aucun cube (${(presence * 100) | 0}%)`, 16, 26);
-      return;
-    }
+    if (!activeRef.current) {
+      if (presence >= PRESENCE_ON) { activeRef.current = true; presMissRef.current = 0; }
+      else {
+        ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 168, 26);
+        ctx.fillStyle = "#fca5a5"; ctx.font = "14px system-ui";
+        ctx.fillText(`aucun cube (${(presence * 100) | 0}%)`, 16, 26);
+        return;
+      }
+    } else if (presence < PRESENCE_OFF) {
+      if (++presMissRef.current >= 4) {
+        activeRef.current = false; presMissRef.current = 0;
+        zoneRef.current = null; poseRef.current = null; coastRef.current = null;
+        return;
+      }
+    } else presMissRef.current = 0;
 
     const W = grabber.width, H = grabber.height;
     const sc = Array.from({ length: 8 }, (_, i) => {
@@ -97,14 +113,21 @@ export default function HybridScanner() {
       return { x: median(xs), y: median(ys), w: median(ws) };
     });
 
-    // ---- ML zone → bbox over the visible corners (expanded), in PIXEL coords ----
+    // ---- ML zone → bbox over the visible corners (expanded), then TEMPORALLY
+    // STABILISED (reject partial/jumping bboxes, EMA, hold the last good zone).
     const vis = sc.filter((p) => p.w >= VIS_MIN);
-    if (vis.length < 3) return;
-    let minx = 1, miny = 1, maxx = 0, maxy = 0;
-    for (const p of vis) { minx = Math.min(minx, p.x); miny = Math.min(miny, p.y); maxx = Math.max(maxx, p.x); maxy = Math.max(maxy, p.y); }
-    const ex = 0.18;
-    const rx0 = (minx - ex * (maxx - minx)) * W, rx1 = (maxx + ex * (maxx - minx)) * W;
-    const ry0 = (miny - ex * (maxy - miny)) * H, ry1 = (maxy + ex * (maxy - miny)) * H;
+    if (vis.length >= 3) {
+      let minx = 1, miny = 1, maxx = 0, maxy = 0;
+      for (const p of vis) { minx = Math.min(minx, p.x); miny = Math.min(miny, p.y); maxx = Math.max(maxx, p.x); maxy = Math.max(maxy, p.y); }
+      const ex = 0.18;
+      zoneRef.current = stabiliseZone(zoneRef.current, {
+        x0: (minx - ex * (maxx - minx)) * W, x1: (maxx + ex * (maxx - minx)) * W,
+        y0: (miny - ex * (maxy - miny)) * H, y1: (maxy + ex * (maxy - miny)) * H,
+      });
+    } else if (zoneRef.current && zoneRef.current.miss < 6) {
+      zoneRef.current = { ...zoneRef.current, miss: zoneRef.current.miss + 1 };   // coast on the held zone
+    } else { return; }
+    const rx0 = zoneRef.current.x0, rx1 = zoneRef.current.x1, ry0 = zoneRef.current.y0, ry1 = zoneRef.current.y1;
     const region: Point2[] = [{ x: rx0, y: ry0 }, { x: rx1, y: ry0 }, { x: rx1, y: ry1 }, { x: rx0, y: ry1 }];
 
     if (showMl) {
@@ -142,14 +165,27 @@ export default function HybridScanner() {
       }
     }
     // ---- WHITE PASS: the edge detector misses glared/desaturated white facelets,
-    // so also detect them by a brightness+low-saturation mask, and merge any that
-    // the edge pass didn't already find (dedupe by centre distance).
+    // so also detect them by a brightness+low-saturation mask. But that mask ALSO
+    // fires on white furniture/wall — so a white blob is only accepted when it is
+    // CONSISTENT with the already-detected coloured cluster: sticker-sized AND next
+    // to a real sticker. Furniture behind the cube fails both. (Falls back to the
+    // loose region push when too few coloured stickers exist to form a reference.)
     {
       const whites = shapeRef.current!.detectWhite(image, region);
       const near = (a: Point2, b: Point2, s: number) => Math.hypot(a.x - b.x, a.y - b.y) < 0.6 * s;
+      const sides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
+      const medCol = sides.length ? sides[sides.length >> 1] : 0;
+      const enoughCluster = shapes.length >= 3 && medCol > 0;
       for (const wsh of whites) {
         const side = Math.sqrt(Math.max(1, wsh.area));
-        if (!shapes.some((s) => near(s.center, wsh.center, side))) shapes.push(wsh);
+        if (shapes.some((s) => near(s.center, wsh.center, side))) continue;   // duplicate of an edge sticker
+        if (enoughCluster) {
+          const r = side / medCol;
+          if (r < 0.6 || r > 1.7) continue;                                   // not sticker-sized
+          const adjacent = shapes.some((s) => Math.hypot(s.center.x - wsh.center.x, s.center.y - wsh.center.y) < 1.8 * medCol);
+          if (!adjacent) continue;                                           // floating white → furniture/wall
+        }
+        shapes.push(wsh);
       }
     }
 
@@ -187,7 +223,7 @@ export default function HybridScanner() {
 
     // ---- STICKER HISTORY: merge this frame's detections into short-lived tracks
     // (TTL ~8 frames). A sticker missed on one frame keeps feeding the links.
-    const TTL = 8;
+    const TTL = 12;
     const tracks = tracksRef.current;
     for (const t of tracks) t.ttl--;
     for (const s of shapes) {
@@ -197,7 +233,7 @@ export default function HybridScanner() {
         const d = Math.hypot(t.shape.center.x - s.center.x, t.shape.center.y - s.center.y);
         if (d < bd) { bd = d; best = t; }
       }
-      if (best && bd < 0.7 * side) { best.shape = s as TrackedShape; best.ttl = TTL; }
+      if (best && bd < 0.9 * side) { best.shape = s as TrackedShape; best.ttl = TTL; }
       else tracks.push({ shape: s as TrackedShape, ttl: TTL });
     }
     tracksRef.current = tracks.filter((t) => t.ttl > 0);
@@ -358,7 +394,7 @@ export default function HybridScanner() {
       } else {
         poseRef.current = null;
       }
-      coastRef.current = { corners: c, edges: pose.edges, ttl: 14 };  // ~0.5s hold
+      coastRef.current = { corners: c, edges: pose.edges, ttl: 20 };  // ~0.7s hold
       if (showCubeRef.current) {
         for (const [i, j] of pose.edges) {
           const vertical = i + 4 === j;
@@ -372,7 +408,7 @@ export default function HybridScanner() {
     } else if (coastRef.current && coastRef.current.ttl > 0) {
       const co = coastRef.current; co.ttl--;
       if (showCubeRef.current) {
-        const alpha = 0.25 + 0.5 * (co.ttl / 14);
+        const alpha = 0.25 + 0.5 * (co.ttl / 20);
         ctx.lineWidth = 2.5; ctx.strokeStyle = `rgba(0,224,255,${alpha.toFixed(2)})`;
         for (const [i, j] of co.edges) { ctx.beginPath(); ctx.moveTo(co.corners[i].x, co.corners[i].y); ctx.lineTo(co.corners[j].x, co.corners[j].y); ctx.stroke(); }
       }
@@ -411,7 +447,7 @@ export default function HybridScanner() {
     }
   };
 
-  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; histRef.current = []; poseRef.current = null; coastRef.current = null; zoneRef.current = null; activeRef.current = false; presMissRef.current = 0; setStatus("idle"); };
 
   // capture the currently visible dominant face into the cube state, keyed by its
   // centre colour (the centre identifies the face). Merges with any prior read of

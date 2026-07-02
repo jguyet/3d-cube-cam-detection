@@ -589,6 +589,8 @@ export interface FaceLattice {
   count: number;                // detected stickers on this face
   stickerFrac: number;          // sticker side / cell pitch (proportion; 1 = no gap)
   surface: [Point2, Point2, Point2, Point2]; // EXACT cube-face outer contour (extrapolated to the physical edge)
+  centerAnchored: boolean;      // true when detected stickers bracket the physical centre on BOTH axes → cell (1,1) IS the centre
+  centerCell: [Point2, Point2, Point2, Point2]; // the centre facelet quad (grid cell 1,1), TL,TR,BR,BL
 }
 export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
   if (!shapes || shapes.length < 3) return [];
@@ -625,7 +627,15 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
       const fc = [nodes[0][0], nodes[3][0], nodes[3][3], nodes[0][3]];
       const ctr = { x: (fc[0].x + fc[1].x + fc[2].x + fc[3].x) / 4, y: (fc[0].y + fc[1].y + fc[2].y + fc[3].y) / 4 };
       const surface = fc.map((p) => ({ x: ctr.x + (p.x - ctr.x) * scale, y: ctr.y + (p.y - ctr.y) * scale })) as [Point2, Point2, Point2, Point2];
-      return { nodes, filled, centres, count: f.stickers.length, stickerFrac, surface };
+      // centre anchoring: a detected sticker in outer col 0 AND col 2 AND row 0 AND
+      // row 2 geometrically forces grid index 1 to be the physical centre facelet.
+      const colHas0 = filled[0][0] || filled[0][1] || filled[0][2];
+      const colHas2 = filled[2][0] || filled[2][1] || filled[2][2];
+      const rowHas0 = filled[0][0] || filled[1][0] || filled[2][0];
+      const rowHas2 = filled[0][2] || filled[1][2] || filled[2][2];
+      const centerAnchored = colHas0 && colHas2 && rowHas0 && rowHas2;
+      const centerCell: [Point2, Point2, Point2, Point2] = [nodes[1][1], nodes[2][1], nodes[2][2], nodes[1][2]];
+      return { nodes, filled, centres, count: f.stickers.length, stickerFrac, surface, centerAnchored, centerCell };
     });
   } catch { return []; }
 }
