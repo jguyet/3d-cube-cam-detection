@@ -32,9 +32,12 @@ export default function HybridScanner() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [showMl, setShowMl] = useState(true);
-  const [showLattice, setShowLattice] = useState(true);
-  const showLatticeRef = useRef(true);
+  const [showLattice, setShowLattice] = useState(false);   // extrapolated 3x3 grid
+  const showLatticeRef = useRef(false);
   showLatticeRef.current = showLattice;
+  const [showCube, setShowCube] = useState(false);          // 3D cube overlay
+  const showCubeRef = useRef(false);
+  showCubeRef.current = showCube;
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -129,22 +132,32 @@ export default function HybridScanner() {
       ctx.closePath(); ctx.stroke();
     }
 
-    // ---- LATTICES (user's idea): link the detected stickers with cube-consistent
-    // connections → COMPLETE 3×3 grid per face, anchored exactly on the stickers.
-    // Missing cells are completed by the face structure; 2 faces show the cube fold.
+    // ---- LIAISONS (primary display): connect the detected sticker centres to
+    // their grid NEIGHBOURS — coherent cube-structure links, nothing invented.
+    // Solid green = adjacent stickers; dashed = same row/col with one missing cell.
     const lattices = faceLatticesFromStickers(shapes as never[]);
-    if (showLatticeRef.current) for (const lat of lattices) {
-      ctx.fillStyle = "rgba(255,140,0,0.16)";              // detected cells, light fill
-      for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
-        if (!lat.filled[gx][gy]) continue;
-        const q = [lat.nodes[gx][gy], lat.nodes[gx + 1][gy], lat.nodes[gx + 1][gy + 1], lat.nodes[gx][gy + 1]];
-        ctx.beginPath(); q.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-        ctx.closePath(); ctx.fill();
+    let nLinks = 0;
+    for (const lat of lattices) {
+      for (let a = 0; a < lat.centres.length; a++) for (let b = a + 1; b < lat.centres.length; b++) {
+        const A = lat.centres[a], B = lat.centres[b];
+        const dgx = Math.abs(A.gx - B.gx), dgy = Math.abs(A.gy - B.gy);
+        if (dgx + dgy === 1) {                                   // direct neighbours
+          ctx.setLineDash([]); ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(0,255,120,0.9)";
+        } else if ((dgx === 2 && dgy === 0) || (dgx === 0 && dgy === 2)) {  // skip a missing cell
+          ctx.setLineDash([6, 5]); ctx.lineWidth = 1.8; ctx.strokeStyle = "rgba(0,255,120,0.55)";
+        } else continue;
+        ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); nLinks++;
       }
-      ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,140,0,0.9)";  // full grid
-      for (let u = 0; u < 4; u++) {
-        ctx.beginPath(); ctx.moveTo(lat.nodes[u][0].x, lat.nodes[u][0].y); ctx.lineTo(lat.nodes[u][3].x, lat.nodes[u][3].y); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(lat.nodes[0][u].x, lat.nodes[0][u].y); ctx.lineTo(lat.nodes[3][u].x, lat.nodes[3][u].y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#00ff78";
+      for (const c0 of lat.centres) { ctx.beginPath(); ctx.arc(c0.x, c0.y, 4, 0, Math.PI * 2); ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = "#000"; ctx.stroke(); }
+      // optional extrapolated 3×3 grid (off by default)
+      if (showLatticeRef.current) {
+        ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,140,0,0.7)";
+        for (let u = 0; u < 4; u++) {
+          ctx.beginPath(); ctx.moveTo(lat.nodes[u][0].x, lat.nodes[u][0].y); ctx.lineTo(lat.nodes[u][3].x, lat.nodes[u][3].y); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(lat.nodes[0][u].x, lat.nodes[0][u].y); ctx.lineTo(lat.nodes[3][u].x, lat.nodes[3][u].y); ctx.stroke();
+        }
       }
     }
 
@@ -180,35 +193,31 @@ export default function HybridScanner() {
         poseRef.current = null;
       }
       coastRef.current = { corners: c, edges: pose.edges, ttl: 14 };  // ~0.5s hold
-      // complete cube (cyan): verticals dimmer so the 3D reads
-      for (const [i, j] of pose.edges) {
-        const vertical = i + 4 === j;
-        ctx.lineWidth = vertical ? 2 : 3;
-        ctx.strokeStyle = vertical ? "rgba(0,224,255,0.6)" : "rgba(0,224,255,0.95)";
-        ctx.beginPath(); ctx.moveTo(c[i].x, c[i].y); ctx.lineTo(c[j].x, c[j].y); ctx.stroke();
+      if (showCubeRef.current) {
+        for (const [i, j] of pose.edges) {
+          const vertical = i + 4 === j;
+          ctx.lineWidth = vertical ? 2 : 3;
+          ctx.strokeStyle = vertical ? "rgba(0,224,255,0.6)" : "rgba(0,224,255,0.95)";
+          ctx.beginPath(); ctx.moveTo(c[i].x, c[i].y); ctx.lineTo(c[j].x, c[j].y); ctx.stroke();
+        }
+        ctx.fillStyle = "#00e0ff";
+        for (const p of c) { ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); ctx.fill(); }
       }
-      ctx.fillStyle = "#00e0ff";
-      for (const p of c) { ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); ctx.fill(); }
-      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
-      ctx.fillStyle = "#a8f0ff"; ctx.font = "13px system-ui";
-      ctx.fillText(`cube 3D + ${lattices.length} grille(s) — ${shapes.length} stickers, conf ${pose.confidence.toFixed(2)}`, 14, 25);
     } else if (coastRef.current && coastRef.current.ttl > 0) {
-      // COAST: hold the last good cube through brief detector dropouts (fading) —
-      // kills the blinking that made live feel unstable. Pose filter kept alive.
       const co = coastRef.current; co.ttl--;
-      const alpha = 0.25 + 0.5 * (co.ttl / 14);
-      ctx.lineWidth = 2.5; ctx.strokeStyle = `rgba(0,224,255,${alpha.toFixed(2)})`;
-      for (const [i, j] of co.edges) { ctx.beginPath(); ctx.moveTo(co.corners[i].x, co.corners[i].y); ctx.lineTo(co.corners[j].x, co.corners[j].y); ctx.stroke(); }
-      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
-      ctx.fillStyle = "#7dd3fc"; ctx.font = "13px system-ui";
-      ctx.fillText(`cube 3D (maintien) — ${shapes.length} stickers`, 14, 25);
+      if (showCubeRef.current) {
+        const alpha = 0.25 + 0.5 * (co.ttl / 14);
+        ctx.lineWidth = 2.5; ctx.strokeStyle = `rgba(0,224,255,${alpha.toFixed(2)})`;
+        for (const [i, j] of co.edges) { ctx.beginPath(); ctx.moveTo(co.corners[i].x, co.corners[i].y); ctx.lineTo(co.corners[j].x, co.corners[j].y); ctx.stroke(); }
+      }
     } else {
       poseRef.current = null;
       coastRef.current = null;
-      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 250, 24);
-      ctx.fillStyle = "#fca5a5"; ctx.font = "13px system-ui";
-      ctx.fillText(lattices.length ? `grilles: ${lattices.length} (${shapes.length} stickers)` : `zone ML — pas de cube confirmé (${shapes.length} stickers)`, 14, 25);
     }
+
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(8, 8, 280, 24);
+    ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
+    ctx.fillText(`${nLinks} liaison(s) · ${shapes.length} stickers · ${lattices.length} face(s)`, 14, 25);
   };
 
   const start = async () => {
@@ -261,7 +270,10 @@ export default function HybridScanner() {
           <input type="checkbox" checked={showMl} onChange={(e) => setShowMl(e.target.checked)} /> zone ML (cyan)
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-          <input type="checkbox" checked={showLattice} onChange={(e) => setShowLattice(e.target.checked)} /> liaisons / grilles (orange)
+          <input type="checkbox" checked={showLattice} onChange={(e) => setShowLattice(e.target.checked)} /> grille 3×3 (orange)
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+          <input type="checkbox" checked={showCube} onChange={(e) => setShowCube(e.target.checked)} /> cube 3D (cyan)
         </label>
       </div>
       <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">

@@ -585,6 +585,7 @@ function medianDiag(shapes: Shape[]): number {
 export interface FaceLattice {
   nodes: Point2[][];            // [u][v], u,v ∈ 0..3 — the 16 grid nodes in image px
   filled: boolean[][];          // [gx][gy] 3×3 — true where a sticker was DETECTED
+  centres: { x: number; y: number; gx: number; gy: number }[]; // detected sticker centres + grid cell
   count: number;                // detected stickers on this face
 }
 export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
@@ -594,10 +595,25 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
     return faces.map((f) => {
       const nodes = [0, 1, 2, 3].map((u) => [0, 1, 2, 3].map((v) => applyH(f.H, { x: u, y: v })));
       const filled = [0, 1, 2].map(() => [false, false, false]);
-      for (const st of f.stickers) if (st.gx >= 0 && st.gx < 3 && st.gy >= 0 && st.gy < 3) filled[st.gx][st.gy] = true;
-      return { nodes, filled, count: f.stickers.length };
+      const centres: { x: number; y: number; gx: number; gy: number }[] = [];
+      for (const st of f.stickers) {
+        if (st.gx < 0 || st.gx > 2 || st.gy < 0 || st.gy > 2) continue;
+        filled[st.gx][st.gy] = true;
+        const c = lineXPoint(st.shape.corners) || st.shape.center;  // exact centre (diagonals)
+        centres.push({ x: c.x, y: c.y, gx: st.gx, gy: st.gy });
+      }
+      return { nodes, filled, centres, count: f.stickers.length };
     });
   } catch { return []; }
+}
+// exact projected sticker centre = intersection of the quad's diagonals
+function lineXPoint(c: [Point2, Point2, Point2, Point2]): Point2 | null {
+  const d1 = { x: c[2].x - c[0].x, y: c[2].y - c[0].y };
+  const d2 = { x: c[3].x - c[1].x, y: c[3].y - c[1].y };
+  const den = d1.x * d2.y - d1.y * d2.x;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((c[1].x - c[0].x) * d2.y - (c[1].y - c[0].y) * d2.x) / den;
+  return { x: c[0].x + d1.x * t, y: c[0].y + d1.y * t };
 }
 
 // GLOBAL face separation: each sticker's local homography is a face hypothesis;
