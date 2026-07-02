@@ -173,6 +173,9 @@ export default function HybridScanner() {
     // sample a lattice cell's colour content → recover PARTIALLY-HIDDEN stickers:
     // the homography says where the cell is; if enough pixels inside are a vivid
     // colour (or clean white), the sticker is there — just occluded by a finger.
+    // Is there a sticker in this grid cell? A vivid colour OR a clean-ish WHITE
+    // (bright, low saturation) counts — the white test is loosened because live
+    // white facelets glare/desaturate and the edge detector often misses them.
     const cellHasSticker = (lat: (typeof lattices)[0], gx: number, gy: number): boolean => {
       const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
       let hit = 0, n = 0;
@@ -183,13 +186,19 @@ export default function HybridScanner() {
         const i = (y * W + x) * 4, r = image.data[i], g = image.data[i + 1], b = image.data[i + 2];
         const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
         const sat = mx > 0 ? (mx - mn) / mx : 0;
-        if ((sat > 0.45 && mx > 70) || (mx > 170 && sat < 0.18)) hit++;
+        if ((sat > 0.45 && mx > 70) || (mx > 150 && sat < 0.30)) hit++;   // vivid OR bright-white
         n++;
       }
-      return n > 0 && hit / n >= 0.35;
+      return n > 0 && hit / n >= 0.33;
+    };
+    const cellColour = (lat: (typeof lattices)[0], gx: number, gy: number) => {
+      const q = [lat.nodes[gx][gy], lat.nodes[gx + 1][gy], lat.nodes[gx + 1][gy + 1], lat.nodes[gx][gy + 1]];
+      const rgb = sampleQuadRGB(q, image.data, W, H);
+      return rgb ? colourHex(classifyColour(rgb)) : "#00ff78";
     };
     for (const lat of lattices) {
-      // augment with partially-hidden stickers found by cell colour sampling
+      // augment with cells recovered by colour sampling (missed by the edge
+      // detector — typically WHITE facelets, or a sticker occluded by a finger)
       const cents: { x: number; y: number; gx: number; gy: number; partial?: boolean }[] = [...lat.centres];
       for (let gx = 0; gx < 3; gx++) for (let gy = 0; gy < 3; gy++) {
         if (lat.filled[gx][gy]) continue;
@@ -209,13 +218,13 @@ export default function HybridScanner() {
       }
       ctx.setLineDash([]);
       for (const c0 of cents) {
+        // every cell painted with its READ Rubik colour (white facelets included);
+        // recovered cells get a thin white ring to mark them as inferred.
         ctx.beginPath(); ctx.arc(c0.x, c0.y, 5, 0, Math.PI * 2);
-        if (c0.partial) { ctx.lineWidth = 2; ctx.strokeStyle = "#00ff78"; ctx.stroke(); }   // hollow green = inferred (hidden)
-        else {
-          const rgb = sampleQuadRGB([{ x: c0.x - 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y - 4 }, { x: c0.x + 4, y: c0.y + 4 }, { x: c0.x - 4, y: c0.y + 4 }], image.data, W, H);
-          ctx.fillStyle = rgb ? colourHex(classifyColour(rgb)) : "#00ff78";   // dot = detected sticker's Rubik colour
-          ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = "#000"; ctx.stroke();
-        }
+        ctx.fillStyle = cellColour(lat, c0.gx, c0.gy); ctx.fill();
+        ctx.lineWidth = c0.partial ? 2 : 1.5;
+        ctx.strokeStyle = c0.partial ? "#ffffff" : "#000";   // white ring = inferred, black ring = detected
+        ctx.stroke();
       }
       // optional extrapolated 3×3 grid (off by default)
       if (showLatticeRef.current) {
