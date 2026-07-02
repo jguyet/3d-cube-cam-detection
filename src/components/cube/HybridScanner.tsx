@@ -300,6 +300,7 @@ export default function HybridScanner() {
           const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
           if (mid.x < rx0 || mid.x > rx1 || mid.y < ry0 || mid.y > ry1) continue;   // must be inside the operating zone
           const votes: Record<string, number> = {}; let tot = 0;
+          const uv: Record<string, { u: number; v: number }[]> = {};
           for (let u = lo; u <= hi + 1e-6; u += step) for (let v = lo; v <= hi + 1e-6; v += step) {
             const x = (1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x;
             const y = (1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y;
@@ -310,10 +311,18 @@ export default function HybridScanner() {
             if (c === "skin" || c === "dark" || c === "unknown") continue;   // not a cube colour
             if (mem && mem.ready() >= 3 && !mem.refs[c as keyof typeof mem.refs]) continue;   // only LEARNED colours
             votes[c] = (votes[c] || 0) + 1;
+            (uv[c] ??= []).push({ u, v });
           }
           let bestC = "", bestN = 0;
           for (const k in votes) if (votes[k] > bestN) { bestN = votes[k]; bestC = k; }
-          if (tot > 0 && bestN / tot >= 0.4) {           // partial acceptance on the sticker footprint
+          // the winning colour's ZONE must be about a whole sticker in size: its
+          // spread must cover most of the sticker footprint (dimensioned by the
+          // established stickerFrac), else it's a colour sliver, not a facelet.
+          const pts = uv[bestC] ?? [];
+          const uSpan = pts.length ? Math.max(...pts.map((p) => p.u)) - Math.min(...pts.map((p) => p.u)) : 0;
+          const vSpan = pts.length ? Math.max(...pts.map((p) => p.v)) - Math.min(...pts.map((p) => p.v)) : 0;
+          const sizeOK = uSpan >= 0.6 * (hi - lo) && vSpan >= 0.6 * (hi - lo);
+          if (tot > 0 && bestN / tot >= 0.45 && sizeOK) {   // enough coverage AND sticker-sized zone
             cents.push({ x: mid.x, y: mid.y, gx, gy, name: bestC as CubeColour, found: true });
             nFound++;
           }
@@ -333,7 +342,7 @@ export default function HybridScanner() {
           const A = lat.nodes[gx][gy], B = lat.nodes[gx + 1][gy], C = lat.nodes[gx + 1][gy + 1], D = lat.nodes[gx][gy + 1];
           const mid = { x: (A.x + B.x + C.x + D.x) / 4, y: (A.y + B.y + C.y + D.y) / 4 };
           if (mid.x < rx0 || mid.x > rx1 || mid.y < ry0 || mid.y > ry1) continue;
-          let whiteN = 0, tot = 0;
+          let whiteN = 0, tot = 0; const wpts: { u: number; v: number }[] = [];
           for (let u = lo; u <= hi + 1e-6; u += step) for (let v = lo; v <= hi + 1e-6; v += step) {
             const x = (1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x;
             const y = (1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y;
@@ -343,9 +352,12 @@ export default function HybridScanner() {
             const mx = Math.max(rgb[0], rgb[1], rgb[2]), mn = Math.min(rgb[0], rgb[1], rgb[2]);
             const sat = mx > 0 ? (mx - mn) / mx : 0;
             const whiteByMem = mem && (mem.refs.white?.n ?? 0) >= 4 ? mem.classify(rgb) === "white" : false;
-            if (whiteByMem || (mx > 140 && sat < 0.30)) whiteN++;   // bright & neutral = white facelet
+            if (whiteByMem || (mx > 140 && sat < 0.30)) { whiteN++; wpts.push({ u, v }); }   // bright & neutral
           }
-          if (tot > 0 && whiteN / tot >= 0.5) {
+          // the white zone must be about a whole sticker in size (spread over the footprint)
+          const uSpan = wpts.length ? Math.max(...wpts.map((p) => p.u)) - Math.min(...wpts.map((p) => p.u)) : 0;
+          const vSpan = wpts.length ? Math.max(...wpts.map((p) => p.v)) - Math.min(...wpts.map((p) => p.v)) : 0;
+          if (tot > 0 && whiteN / tot >= 0.5 && uSpan >= 0.6 * (hi - lo) && vSpan >= 0.6 * (hi - lo)) {
             cents.push({ x: mid.x, y: mid.y, gx, gy, name: "white", found: true });
             nFound++;
           }
@@ -377,7 +389,10 @@ export default function HybridScanner() {
         const known = cells.filter((c) => c !== "unknown").length;
         lastFaceRef.current = { center: cells[4], cells, known };
       }
-      if (showLatticeRef.current) {   // optional extrapolated 3×3 grid (off by default)
+      // optional extrapolated 3×3 grid — ONLY when the grid pitch matches the
+      // sticker shape dimensions (the cube's computed size is coherent). An
+      // incoherent grid (cells not sticker-sized) is not drawn.
+      if (showLatticeRef.current && lat.gridCoherent) {
         ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,140,0,0.7)";
         for (let u = 0; u < 4; u++) {
           ctx.beginPath(); ctx.moveTo(lat.nodes[u][0].x, lat.nodes[u][0].y); ctx.lineTo(lat.nodes[u][3].x, lat.nodes[u][3].y); ctx.stroke();
@@ -386,7 +401,7 @@ export default function HybridScanner() {
       }
       // CONTOUR SENSOR: each face's surface is the grid extrapolated (via measured
       // sticker proportions) out to the physical cube edge → the exact border.
-      if (contourRef.current) {
+      if (contourRef.current && lat.gridCoherent) {
         const sf = lat.surface;
         // sanity: skip if the surface fell outside the operating zone (bad face fit)
         const margin = 0.6 * (rx1 - rx0);

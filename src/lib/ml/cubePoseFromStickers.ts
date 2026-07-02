@@ -591,6 +591,7 @@ export interface FaceLattice {
   surface: [Point2, Point2, Point2, Point2]; // EXACT cube-face outer contour (extrapolated to the physical edge)
   centerAnchored: boolean;      // true when detected stickers bracket the physical centre on BOTH axes → cell (1,1) IS the centre
   centerCell: [Point2, Point2, Point2, Point2]; // the centre facelet quad (grid cell 1,1), TL,TR,BR,BL
+  gridCoherent: boolean;        // grid cell pitch matches the sticker shape dimensions (else the cube size is mis-fit)
 }
 export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
   if (!shapes || shapes.length < 3) return [];
@@ -615,7 +616,14 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
         return (Math.hypot(c[1].x - c[0].x, c[1].y - c[0].y) + Math.hypot(c[3].x - c[0].x, c[3].y - c[0].y)) / 2;
       }).sort((a, b) => a - b);
       const sSide = sides[sides.length >> 1] || pitch;
-      const stickerFrac = Math.max(0.5, Math.min(0.98, sSide / pitch));
+      const rawFrac = sSide / pitch;    // sticker side ÷ cell pitch — measurable, unclamped
+      const stickerFrac = Math.max(0.5, Math.min(0.98, rawFrac));
+      // COHERENCE: a real facelet fills most of its cell (gap is small), so the
+      // sticker-side / cell-pitch ratio must sit in a physical band. If the grid
+      // cells are far bigger than the sticker shapes (rawFrac too small — stickers
+      // got spread across skipped cells) or smaller (overlap), the grid does not
+      // match the sticker dimensions → the computed cube size is wrong.
+      const gridCoherent = rawFrac >= 0.5 && rawFrac <= 1.08;
       // The physical cube edge sits beyond the outer stickers by ~half the gap plus
       // the plastic frame border. EXPAND the face quad about its centroid rather
       // than extrapolating the homography to grid [-m,3+m] — projective extrapolation
@@ -635,7 +643,7 @@ export function faceLatticesFromStickers(shapes: Shape[]): FaceLattice[] {
       const rowHas2 = filled[0][2] || filled[1][2] || filled[2][2];
       const centerAnchored = colHas0 && colHas2 && rowHas0 && rowHas2;
       const centerCell: [Point2, Point2, Point2, Point2] = [nodes[1][1], nodes[2][1], nodes[2][2], nodes[1][2]];
-      return { nodes, filled, centres, count: f.stickers.length, stickerFrac, surface, centerAnchored, centerCell };
+      return { nodes, filled, centres, count: f.stickers.length, stickerFrac, surface, centerAnchored, centerCell, gridCoherent };
     });
   } catch { return []; }
 }
