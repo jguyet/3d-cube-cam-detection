@@ -162,7 +162,7 @@ export default function HybridScanner() {
         const hi = shapeRef.current!.detect(cropImg, 125, cropRegion);
         if (hi.length > shapes.length) shapes = hi.map(mapBack);   // keep whichever scale found more
         // whites detected at high-res WITH the dark-border test (gap is several px wide here)
-        cropWhites = shapeRef.current!.detectWhite(cropImg, cropRegion, true).map(mapBack);
+        cropWhites = shapeRef.current!.detectWhite(cropImg, cropRegion, false).map(mapBack);
       }
     }
     // ---- WHITE PASS: white facelets can't be edge-detected (glare/blend). Detect
@@ -179,7 +179,7 @@ export default function HybridScanner() {
       // (sharp gaps) AND the full frame; union them (dedup so a white found at both
       // scales counts once). More whites caught → more complete faces.
       const whites: Shape[] = [...(cropWhites ?? [])];
-      for (const wsh of shapeRef.current!.detectWhite(image, region, true)) {
+      for (const wsh of shapeRef.current!.detectWhite(image, region, false)) {
         const side = Math.sqrt(Math.max(1, wsh.area));
         if (!whites.some((o) => near(o.center, wsh.center, side))) whites.push(wsh);
       }

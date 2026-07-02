@@ -22,7 +22,7 @@ export function detectStickers(det: ShapeDetector, image: ImageData): Shape[] {
   let shapes = det.detect(image, 125, region);
   // white pass (border-tested) — unioned, sticker-sized, no coloured-neighbour requirement
   const near = (a: Point2, b: Point2, s: number) => Math.hypot(a.x - b.x, a.y - b.y) < 0.6 * s;
-  const whites = det.detectWhite(image, region, true);
+  const whites = det.detectWhite(image, region, false);   // border test rejects real light-gap whites
   const colSides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
   const whSides = whites.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
   const ref = colSides.length >= 3 ? colSides[colSides.length >> 1] : (whSides.length ? whSides[whSides.length >> 1] : 0);
