@@ -174,8 +174,15 @@ export default function HybridScanner() {
     // furniture squares don't rectify to a regular 3×3). Size-plausibility uses the
     // coloured cluster if present, else the whites' own median (all ~equal on a face).
     {
-      const whites = cropWhites ?? shapeRef.current!.detectWhite(image, region, true);
       const near = (a: Point2, b: Point2, s: number) => Math.hypot(a.x - b.x, a.y - b.y) < 0.6 * s;
+      // apply white detection to BOTH scales of shape detection: the hi-res crop
+      // (sharp gaps) AND the full frame; union them (dedup so a white found at both
+      // scales counts once). More whites caught → more complete faces.
+      const whites: Shape[] = [...(cropWhites ?? [])];
+      for (const wsh of shapeRef.current!.detectWhite(image, region, true)) {
+        const side = Math.sqrt(Math.max(1, wsh.area));
+        if (!whites.some((o) => near(o.center, wsh.center, side))) whites.push(wsh);
+      }
       const colSides = shapes.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
       const whSides = whites.map((s) => Math.sqrt(Math.max(1, s.area))).sort((a, b) => a - b);
       const ref = colSides.length >= 3 ? colSides[colSides.length >> 1] : (whSides.length ? whSides[whSides.length >> 1] : 0);
