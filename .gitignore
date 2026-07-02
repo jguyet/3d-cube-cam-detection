@@ -62,3 +62,4 @@ _*.ts
 # 3D t-shirt mockup assets (copied from linepicplus/3d-mockups)
 /public/mockup/
 /public/dataset-tests/
+/dataset-review/
