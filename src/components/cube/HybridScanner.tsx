@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { CubeNet, type MLResult } from "@/lib/ml/cubeNet";
 import { ShapeDetector, type Shape } from "@/lib/rubik-detector/core/ShapeDetector";
-import { cubePoseFromStickers, faceLatticesFromStickers, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
+import { faceLatticesFromStickers, cubeFromLattice, CUBE_EDGES, projectPose, matToQuat, quatToMat, slerp, type Quat } from "@/lib/ml/cubePoseFromStickers";
 import { sampleQuadRGB, classifyColour, colourHex, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 import { stabiliseZone, type Zone } from "@/lib/ml/temporalStabilise";
 import { ShapeMemory } from "@/lib/ml/shapeMemory";
@@ -267,9 +267,6 @@ export default function HybridScanner() {
     tracksRef.current = tracks.filter((t) => t.ttl > 0);
     const tracked = tracksRef.current.map((t) => t.shape);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pose = tracked.length >= 3 ? cubePoseFromStickers(tracked as any, W, H) : null;
-
     // tracked stickers (faint; fresher = brighter)
     for (const t of tracksRef.current) {
       ctx.lineWidth = 1; ctx.strokeStyle = `rgba(255,255,255,${(0.15 + 0.25 * (t.ttl / TTL)).toFixed(2)})`;
@@ -495,21 +492,20 @@ export default function HybridScanner() {
       }
     }
 
-    if (pose) {
+    // ---- 3D CUBE from the FINAL data: derive it from the dominant COHERENT lattice
+    // (frontal-fit, deduped grid) rather than a separate raw DLT resection, so the
+    // cyan cube is consistent with the links/cells and benefits from every fix.
+    const domLat = lattices.filter((l) => l.gridCoherent).sort((a, b) => b.count - a.count)[0];
+    const latCube = domLat ? cubeFromLattice(domLat, W, H) : null;
+    if (latCube) {
       // POSE-SPACE (quaternion) temporal filter → rigid, no pixel "swimming".
-      // Only when the exposed pose actually reprojects the displayed cube (holds for
-      // the common close-up/single-face case); else keep the raw resection corners.
-      let c = pose.corners;
-      let poseOK = false;
-      if (pose.pose) {
-        const raw = projectPose(pose.pose, W, H);
-        const xs = pose.corners.map((p) => p.x), ys = pose.corners.map((p) => p.y);
-        const sz = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
-        let md = 0; for (let i = 0; i < 8; i++) md = Math.max(md, Math.hypot(raw[i].x - pose.corners[i].x, raw[i].y - pose.corners[i].y));
-        poseOK = md < 0.12 * sz;
-      }
-      if (pose.pose && poseOK) {
-        const p = pose.pose;
+      let c = latCube.corners;
+      const raw = projectPose(latCube.pose, W, H);
+      const xs = latCube.corners.map((p) => p.x), ys = latCube.corners.map((p) => p.y);
+      const sz = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
+      let md = 0; for (let i = 0; i < 8; i++) md = Math.max(md, Math.hypot(raw[i].x - latCube.corners[i].x, raw[i].y - latCube.corners[i].y));
+      if (md < 0.12 * sz) {
+        const p = latCube.pose;
         const q = matToQuat(p.R);
         const k = [p.f, p.fy ?? p.f, p.cx ?? W / 2, p.cy ?? H / 2, p.s ?? 0];
         const prev = poseRef.current;
@@ -526,9 +522,9 @@ export default function HybridScanner() {
       } else {
         poseRef.current = null;
       }
-      coastRef.current = { corners: c, edges: pose.edges, ttl: 20 };  // ~0.7s hold
+      coastRef.current = { corners: c, edges: CUBE_EDGES, ttl: 20 };  // ~0.7s hold
       if (showCubeRef.current) {
-        for (const [i, j] of pose.edges) {
+        for (const [i, j] of CUBE_EDGES) {
           const vertical = i + 4 === j;
           ctx.lineWidth = vertical ? 2 : 3;
           ctx.strokeStyle = vertical ? "rgba(0,224,255,0.6)" : "rgba(0,224,255,0.95)";

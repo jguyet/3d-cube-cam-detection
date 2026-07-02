@@ -70,7 +70,7 @@ const CUBE_CORNERS: Vec[] = [
   [0, 0, 0], [3, 0, 0], [3, 3, 0], [0, 3, 0],
   [0, 0, 3], [3, 0, 3], [3, 3, 3], [0, 3, 3],
 ];
-const CUBE_EDGES: [number, number][] = [
+export const CUBE_EDGES: [number, number][] = [
   [0, 1], [1, 2], [2, 3], [3, 0], // bottom ring
   [4, 5], [5, 6], [6, 7], [7, 4], // top ring
   [0, 4], [1, 5], [2, 6], [3, 7], // verticals
@@ -850,6 +850,18 @@ export function projectPose(p: Pose3D, W: number, Himg: number): Point2[] {
     const zc = R[2][0] * X[0] + R[2][1] * X[1] + R[2][2] * X[2] + t[2] || 1e-9;
     return { x: (fx * xc + sk * yc + cx * zc) / zc, y: (fy * yc + cy * zc) / zc };
   });
+}
+
+// Build the 8 cube corners + a filterable pose from a FINAL FaceLattice (the
+// coherent, frontal-fit, deduped grid) — so the 3D cube overlay is driven by the
+// same clean data as the links/cells, not a separate raw DLT resection. Fits the
+// grid→image homography from all 16 lattice nodes, then decomposes it.
+export function cubeFromLattice(lat: FaceLattice, W: number, Himg: number): { corners: Point2[]; pose: Pose3D } | null {
+  const src: Point2[] = [], dst: Point2[] = [];
+  for (let u = 0; u < 4; u++) for (let v = 0; v < 4; v++) { src.push({ x: u, y: v }); dst.push(lat.nodes[u][v]); }
+  const H = homographyDLT(src, dst); if (!H) return null;
+  const pose = poseFromFaceH(H, W, Himg); if (!pose) return null;
+  return { corners: projectPose(pose, W, Himg), pose };
 }
 
 // Decompose a 3×4 projective camera P = K[R|t] (RQ on the left 3×3 via Givens),
