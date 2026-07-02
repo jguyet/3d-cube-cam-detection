@@ -630,10 +630,10 @@ function extractFacesV2(shapes: Shape[]): Face[] {
     const lft = { x: rc[3].x - rc[0].x, y: rc[3].y - rc[0].y };
     const wl = Math.hypot(top.x, top.y), hl = Math.hypot(lft.x, lft.y);
     if (wl < 1e-6 || hl < 1e-6) return false;
-    if (Math.abs(top.y) / wl > 0.30 || Math.abs(lft.x) / hl > 0.30) return false;
-    return wl >= 0.5 && wl <= 2 && hl >= 0.5 && hl <= 2;
+    if (Math.abs(top.y) / wl > 0.38 || Math.abs(lft.x) / hl > 0.38) return false;
+    return wl >= 0.4 && wl <= 2.4 && hl >= 0.4 && hl <= 2.4;
   };
-  for (let pass = 0; pass < 3 && remaining.size >= 4; pass++) {
+  for (let pass = 0; pass < 3 && remaining.size >= 3; pass++) {
     let best: { i: number; gx: number; gy: number }[] = [];
     for (const seed of remaining) {
       const loc = items[seed].loc; if (!loc) continue;
@@ -660,7 +660,7 @@ function extractFacesV2(shapes: Shape[]): Face[] {
       }
       if (set.length > best.length) best = set;
     }
-    if (best.length < 4) break;
+    if (best.length < 3) break;
     let st: FaceSticker[] = best.map((e) => ({ shape: items[e.i].s, idx: e.i, gx: e.gx, gy: e.gy }));
     let Hf = fitFaceH(st, null); if (!Hf) break;
     // RE-COLLECT with the refined FACE homography (true pitch incl. the gaps): the
@@ -674,13 +674,13 @@ function extractFacesV2(shapes: Shape[]): Face[] {
         const gx = Math.round(g.x - 0.5), gy = Math.round(g.y - 0.5);
         if (gx < 0 || gx > 2 || gy < 0 || gy > 2) continue;
         const err = Math.hypot(g.x - 0.5 - gx, g.y - 0.5 - gy);
-        if (err > 0.30) continue;
+        if (err > 0.38) continue;
         if (!skewOK(Hi2, items[o].s)) continue;   // reject folded (other-face) quads
         const key = gx + ',' + gy;
         const prev = perCell.get(key);
         if (!prev || err < prev.err) perCell.set(key, { i: o, gx, gy, err });
       }
-      if (perCell.size < 4) break;
+      if (perCell.size < 3) break;
       const st2: FaceSticker[] = Array.from(perCell.values()).map((e) => ({ shape: items[e.i].s, idx: e.i, gx: e.gx, gy: e.gy }));
       const Hf2 = fitFaceH(st2, Hf); if (!Hf2) break;
       st = st2; Hf = Hf2;
