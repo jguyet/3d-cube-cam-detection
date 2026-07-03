@@ -41,7 +41,7 @@ const shapeAngle = (s: Shape): number => {
 };
 const angDiff = (a: number, b: number) => { const d = Math.abs(a - b); return Math.min(d, Math.PI / 2 - d); };
 
-export function graphFaces(shapes: Shape[], oriTol = 0.44): GraphResult {
+export function graphFaces(shapes: Shape[], oriTol = 0.18): GraphResult {
   const N = shapes.length;
   const nodes: GraphNode[] = shapes.map((s) => ({ shape: s, gx: 0, gy: 0, face: -1, deg: 0 }));
   if (N < 2) return { nodes, faces: [], edges: [] };
@@ -168,7 +168,7 @@ function fitAffine(pts: { gx: number; gy: number; x: number; y: number }[]): ((g
 // sticker should be — classified through the learned palette (ColourMemory, closed-set at
 // 6), and flagged black (a black cell is not a real facelet).
 export function detectCubeFaces(shapes: Shape[], opts: FaceOpts = {}): DetectedFace[] {
-  const { image, mem, minDetected = 4, oriTol = 0.44 } = opts;
+  const { image, mem, minDetected = 4, oriTol = 0.18 } = opts;
   const px = image?.data, iw = image?.width ?? 0, ih = image?.height ?? 0;
   const readColour = (corners: { x: number; y: number }[]): { rgb: [number, number, number] | null; colour: CubeColour; black: boolean } => {
     if (!px) return { rgb: null, colour: "unknown", black: false };
