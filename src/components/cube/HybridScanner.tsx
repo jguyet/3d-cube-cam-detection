@@ -282,18 +282,6 @@ export default function HybridScanner() {
     tracksRef.current = tracks.filter((t) => t.ttl > 0);
     const tracked = tracksRef.current.map((t) => t.shape);
 
-    // ZONE FEEDBACK: grow the operating zone to cover the DETECTED stickers. If the
-    // ML zone framed only half the cube, the stickers we did find (near the crop
-    // edge) push the zone outward next frame → it converges onto the whole cube.
-    if (zoneRef.current && tracked.length >= 3) {
-      let tx0 = Infinity, ty0 = Infinity, tx1 = -Infinity, ty1 = -Infinity, sside = 0;
-      for (const t of tracked) { for (const p of t.corners) { tx0 = Math.min(tx0, p.x); ty0 = Math.min(ty0, p.y); tx1 = Math.max(tx1, p.x); ty1 = Math.max(ty1, p.y); } sside += Math.sqrt(Math.max(1, t.area)); }
-      const m = 0.7 * (sside / tracked.length);   // ~0.7 sticker margin so an outer row can still appear
-      const z = zoneRef.current;
-      z.x0 = Math.min(z.x0, tx0 - m); z.y0 = Math.min(z.y0, ty0 - m);
-      z.x1 = Math.max(z.x1, tx1 + m); z.y1 = Math.max(z.y1, ty1 + m);
-    }
-
     // ---- LIAISONS (primary display): connect DETECTED sticker centres to their
     // grid neighbours — coherent cube-structure links, nothing invented/inferred.
     // Solid green = adjacent; dashed = same row/col skipping one missing cell.

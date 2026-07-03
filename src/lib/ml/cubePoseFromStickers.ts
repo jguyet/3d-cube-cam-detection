@@ -761,30 +761,17 @@ function extractFacesV2(shapes: Shape[]): Face[] {
     // face at the 4 nearest stickers and mistake the gaps for missing cells.
     for (let it = 0; it < 2; it++) {
       const Hi2 = invert3(Hf); if (!Hi2) break;
-      // rectify ALL remaining stickers over a WIDE cell range, then RE-CENTRE the
-      // 3×3 on the densest window — so a corner-anchored 2×2 grows to the full 3×3
-      // instead of clipping the far stickers (bug: often took 4 instead of 9).
-      const cand: { i: number; gx: number; gy: number; err: number }[] = [];
+      const perCell = new Map<string, { i: number; gx: number; gy: number; err: number }>();
       for (const o of remaining) {
         const g = applyH(Hi2, items[o].s.center);
         const gx = Math.round(g.x - 0.5), gy = Math.round(g.y - 0.5);
-        if (gx < -2 || gx > 4 || gy < -2 || gy > 4) continue;
+        if (gx < 0 || gx > 2 || gy < 0 || gy > 2) continue;
         const err = Math.hypot(g.x - 0.5 - gx, g.y - 0.5 - gy);
         if (err > 0.38) continue;
         if (!skewOK(Hi2, items[o].s)) continue;   // reject folded (other-face) quads
-        cand.push({ i: o, gx, gy, err });
-      }
-      let bo = { ox: 0, oy: 0, n: -1 };
-      for (let ox = -2; ox <= 2; ox++) for (let oy = -2; oy <= 2; oy++) {
-        let c = 0; for (const t of cand) if (t.gx >= ox && t.gx <= ox + 2 && t.gy >= oy && t.gy <= oy + 2) c++;
-        if (c > bo.n) bo = { ox, oy, n: c };
-      }
-      const perCell = new Map<string, { i: number; gx: number; gy: number; err: number }>();
-      for (const t of cand) {
-        if (t.gx < bo.ox || t.gx > bo.ox + 2 || t.gy < bo.oy || t.gy > bo.oy + 2) continue;
-        const ngx = t.gx - bo.ox, ngy = t.gy - bo.oy, key = ngx + ',' + ngy;
+        const key = gx + ',' + gy;
         const prev = perCell.get(key);
-        if (!prev || t.err < prev.err) perCell.set(key, { i: t.i, gx: ngx, gy: ngy, err: t.err });
+        if (!prev || err < prev.err) perCell.set(key, { i: o, gx, gy, err });
       }
       if (perCell.size < 3) break;
       const st2: FaceSticker[] = Array.from(perCell.values()).map((e) => ({ shape: items[e.i].s, idx: e.i, gx: e.gx, gy: e.gy }));
