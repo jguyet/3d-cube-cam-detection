@@ -108,7 +108,7 @@ export default function V2AlgoScanner() {
     setError(null); setStatus("loading");
     try {
       detRef.current = new ShapeDetector();
-      memRef.current = new ColourMemory(); memRef.current.load();
+      memRef.current = new ColourMemory(); memRef.current.load(); memRef.current.seedCanonical();
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;

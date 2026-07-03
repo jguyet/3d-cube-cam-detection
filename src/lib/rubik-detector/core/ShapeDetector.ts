@@ -18,6 +18,7 @@ export interface Shape {
   fill: number;      // area / minRect area  (squareness of fill)
   colour?: CubeColour;                 // set when detect() runs colour-aware
   rgb?: [number, number, number];      // region mean RGB
+  homogeneity?: number;                // 0..1, colour uniformity of the region (1 = flat)
 }
 
 // Colour-aware discovery options. When `colour` is on, detect() (1) splits regions at
@@ -133,12 +134,12 @@ export class ShapeDetector {
       if (edges[s0] || vis[s0]) continue;
       vis[s0] = 1; stack.length = 0; stack.push(s0);
       const pts: Point2[] = [];
-      let border = 0, sumR = 0, sumG = 0, sumB = 0;
+      let border = 0, sumR = 0, sumG = 0, sumB = 0, sumR2 = 0, sumG2 = 0, sumB2 = 0;
       while (stack.length) {
         const n = stack.pop()!;
         const nx = n % w, ny = (n / w) | 0;
         pts.push({ x: nx, y: ny });
-        if (colourOn) { sumR += rA[n]; sumG += gA[n]; sumB += bA[n]; }
+        if (colourOn) { const r = rA[n], g = gA[n], b = bA[n]; sumR += r; sumG += g; sumB += b; sumR2 += r * r; sumG2 += g * g; sumB2 += b * b; }
         if (nx === 0 || ny === 0 || nx === w - 1 || ny === h - 1) border++;
         // 4-connectivity keeps regions separated by 1-px edges
         if (nx + 1 < w) { const m = n + 1; if (!edges[m] && !vis[m]) { vis[m] = 1; stack.push(m); } }
@@ -163,10 +164,17 @@ export class ShapeDetector {
       for (const c of rect.corners) { cx += c.x; cy += c.y; }
       const shape: Shape = { corners: rect.corners, center: { x: cx / 4, y: cy / 4 }, area, fill };
       if (colourOn) {
-        const rgb: [number, number, number] = [sumR / area, sumG / area, sumB / area];
+        const mr = sumR / area, mg = sumG / area, mb = sumB / area;
+        const rgb: [number, number, number] = [mr, mg, mb];
+        // colour HOMOGENEITY: per-channel std over the region. A real facelet is one
+        // flat colour (low std); a mixed / glare-ridden / boundary-straddling region
+        // is heterogeneous → not a clean sticker.
+        const std = (Math.sqrt(Math.max(0, sumR2 / area - mr * mr)) + Math.sqrt(Math.max(0, sumG2 / area - mg * mg)) + Math.sqrt(Math.max(0, sumB2 / area - mb * mb)) / 1) / 3;
+        const homogeneity = Math.max(0, 1 - std / 60);
+        if (std > 52) continue;             // too heterogeneous → not a uniform facelet
         const colour = mem ? mem.classify(rgb) : classifyColour(rgb);
-        if (colour === "dark") continue;   // BLACK region → not a facelet, reject at discovery
-        shape.colour = colour; shape.rgb = rgb;
+        if (colour === "dark") continue;    // BLACK region → not a facelet, reject at discovery
+        shape.colour = colour; shape.rgb = rgb; shape.homogeneity = homogeneity;
         if (mem) mem.learn(rgb);
       }
       shapes.push(shape);

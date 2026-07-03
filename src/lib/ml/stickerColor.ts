@@ -142,6 +142,18 @@ export class ColourMemory {
 
   ready(): number { return CHROMATIC.filter((c) => (this.refs[c]?.n ?? 0) >= 4).length; }
 
+  // A cube only ever has these SIX colours, and we KNOW them — so seed the palette
+  // with canonical Rubik anchors. Classification is correct from the first frame
+  // (closed-set active immediately) and the EMA then adapts them to the actual
+  // lighting. Only seeds a colour that hasn't already been learned more confidently.
+  seedCanonical(n = 4): void {
+    const C: Record<string, [number, number, number]> = {
+      white: [235, 235, 235], yellow: [240, 210, 15], red: [180, 25, 35],
+      orange: [240, 95, 10], green: [10, 150, 70], blue: [10, 70, 170],
+    };
+    for (const k of CHROMATIC) { const cur = this.refs[k]; if (!cur || cur.n < n) { const v = C[k]; this.refs[k] = { r: v[0], g: v[1], b: v[2], n }; } }
+  }
+
   load(key = "rubix-palette"): void {
     try { const s = typeof localStorage !== "undefined" && localStorage.getItem(key); if (s) this.refs = JSON.parse(s); } catch { /* ignore */ }
   }
