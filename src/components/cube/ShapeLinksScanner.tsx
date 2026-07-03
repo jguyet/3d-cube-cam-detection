@@ -25,10 +25,11 @@ export default function ShapeLinksScanner() {
   const [adaptive, setAdaptive] = useState(true);
   const [showWhite, setShowWhite] = useState(true);
   const [showColour, setShowColour] = useState(true);
+  const [splitBlocks, setSplitBlocks] = useState(true);
   const [linkMode, setLinkMode] = useState<"neighbours" | "all">("neighbours");
   const [res, setRes] = useState(560);
-  const r = useRef({ thr, adaptive, showWhite, showColour, linkMode });
-  r.current = { thr, adaptive, showWhite, showColour, linkMode };
+  const r = useRef({ thr, adaptive, showWhite, showColour, splitBlocks, linkMode });
+  r.current = { thr, adaptive, showWhite, showColour, splitBlocks, linkMode };
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -45,8 +46,11 @@ export default function ShapeLinksScanner() {
     const o = r.current;
 
     const region = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
-    const shapes = det.detect(image, o.thr, region, o.adaptive);
-    const whites = o.showWhite ? det.detectWhite(image, region, false) : [];
+    let shapes = det.detect(image, o.thr, region, o.adaptive);
+    let whites = o.showWhite ? det.detectWhite(image, region, false) : [];
+    // SPLIT MERGED same-colour blocks (gap-less cubes) into unit cells BEFORE links,
+    // so a 3-in-a-row merged block becomes 3 stickers that link into the grid.
+    if (o.splitBlocks) { shapes = det.splitMerged(shapes); whites = det.splitMerged(whites); }
     const all = [...shapes, ...whites];
 
     // ---- LINKS between shapes ----
@@ -140,6 +144,7 @@ export default function ShapeLinksScanner() {
           <input type="range" min={40} max={400} step={5} value={thr} onChange={(e) => setThr(+e.target.value)} />
           <span className="w-8 font-mono">{thr}</span>
         </label>
+        <label className="flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400"><input type="checkbox" checked={splitBlocks} onChange={(e) => setSplitBlocks(e.target.checked)} /> découper blocs même couleur</label>
         <label className="flex items-center gap-2 text-sm text-cyan-600 dark:text-cyan-400"><input type="checkbox" checked={showWhite} onChange={(e) => setShowWhite(e.target.checked)} /> blanc</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400"><input type="checkbox" checked={showColour} onChange={(e) => setShowColour(e.target.checked)} /> couleur</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
