@@ -74,12 +74,7 @@ function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
 // from an orange/red/yellow sticker.
 export function classifyColour(rgb: [number, number, number]): CubeColour {
   const [h, s, v] = rgbToHsv(rgb[0], rgb[1], rgb[2]);   // v already in 0..1
-  const mn = Math.min(rgb[0], rgb[1], rgb[2]);
-  // WHITE is robust to a WARM cast: a white facelet keeps ALL THREE channels bright (high
-  // min), whereas yellow/orange have a DARK blue channel. This catches cream/warm whites
-  // that a pure low-saturation test misses (they were leaking to yellow/orange/skin).
-  if (mn >= 150 && v > 0.85 && s < 0.38) return "white";   // bright + all channels lit = warm white
-  if (s < 0.16 && v > 0.55) return "white";                // neutral (incl. dimmer) white
+  if (s < 0.16 && v > 0.55) return "white";
   // "dark" = black / gap / shadow → only when ACHROMATIC (low saturation). A dark
   // but SATURATED pixel is a dark red/blue/green facelet → classify it by hue, not
   // dark (this was rejecting dark blue/red stickers).
@@ -125,20 +120,24 @@ export class ColourMemory {
     else { const a = this.alpha; cur.r += a * (rgb[0] - cur.r); cur.g += a * (rgb[1] - cur.g); cur.b += a * (rgb[2] - cur.b); cur.n++; }
   }
 
-  // Trust the fixed heuristic for the CLEAR colours (white/yellow/green/blue and the
-  // structural skin/dark) — snapping those to a learned centroid was misfiring (white→
-  // yellow). Use the learned palette ONLY to settle the one genuinely ambiguous pair,
-  // RED↔ORANGE, where the fixed hue bins are unreliable.
+  // Classify against the learned palette; fall back to the fixed heuristic.
   classify(rgb: [number, number, number]): CubeColour {
     const fixed = classifyColour(rgb);
-    if (fixed !== "red" && fixed !== "orange") return fixed;
-    const rr = this.refs.red, ro = this.refs.orange;
-    if (rr && ro && rr.n >= 4 && ro.n >= 4) {
-      const [cr, cg] = chroma(rgb[0], rgb[1], rgb[2]);
-      const [rrr, rrg] = chroma(rr.r, rr.g, rr.b), [orr, org] = chroma(ro.r, ro.g, ro.b);
-      return Math.hypot(cr - rrr, cg - rrg) <= Math.hypot(cr - orr, cg - org) ? "red" : "orange";
+    if (fixed === "skin" || fixed === "dark") return fixed;   // structural — never override
+    const [cr, cg] = chroma(rgb[0], rgb[1], rgb[2]);
+    let best: CubeColour | null = null, bd = Infinity;
+    for (const name of CHROMATIC) {
+      const ref = this.refs[name];
+      if (!ref || ref.n < 4) continue;
+      const [rr, rg] = chroma(ref.r, ref.g, ref.b);
+      const d = Math.hypot(cr - rr, cg - rg);
+      if (d < bd) { bd = d; best = name; }
     }
-    return fixed;
+    // CLOSED-SET: once all 6 colours are learned, a real facelet can ONLY be one of
+    // them → snap to the nearest learned centroid with no tolerance gate (kills
+    // misreads to the fixed HSV bins, esp. red↔orange). Before that, gate by tol.
+    if (best && this.ready() >= 6) return best;
+    return best && bd < this.tol ? best : fixed;
   }
 
   ready(): number { return CHROMATIC.filter((c) => (this.refs[c]?.n ?? 0) >= 4).length; }
