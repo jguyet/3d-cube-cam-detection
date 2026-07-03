@@ -9,6 +9,7 @@ import { sampleQuadRGB, darkFraction, classifyColour, colourHex, ColourMemory, t
 import { stabiliseZone, type Zone } from "@/lib/ml/temporalStabilise";
 import { ShapeMemory } from "@/lib/ml/shapeMemory";
 import type { Point2 } from "@/lib/rubik-detector/types";
+import { orderQuad } from "@/lib/rubik-detector/utils/geometry";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
@@ -231,7 +232,7 @@ export default function HybridScanner() {
     if (ref && shapes.length >= 3) {
       shapes = shapes.filter((s) => {
         const r = Math.sqrt(Math.max(1, s.area)) / ref;
-        if (r < 0.6 || r > 1.6) { nSize++; return false; }   // outside the smooth band → not a facelet now
+        if (r < 0.62 || r > 1.4) { nSize++; return false; }   // reject noise-MERGED pairs (~1.41×) that corrupt tracks & flicker the grid
         return true;
       });
     }
@@ -263,8 +264,17 @@ export default function HybridScanner() {
         const d = Math.hypot(t.shape.center.x - s.center.x, t.shape.center.y - s.center.y);
         if (d < bd) { bd = d; best = t; }
       }
-      if (best && bd < 0.9 * side) { best.shape = s as TrackedShape; best.ttl = TTL; }
-      else tracks.push({ shape: s as TrackedShape, ttl: TTL });
+      if (best && bd < 0.9 * side) {
+        // EMA the matched track toward the new detection instead of REPLACING it —
+        // on a static scene sensor noise jitters the corners frame-to-frame, which
+        // destabilises the grid (9↔6 flicker). Order both quads consistently, then
+        // blend; SNAP (a=1) on real motion, SMOOTH (a=0.35) on static jitter.
+        const a = bd > 0.4 * side ? 1 : 0.35;
+        const oc = orderQuad(best.shape.corners), nc = orderQuad(s.corners);
+        const bc = oc.map((p, i) => ({ x: p.x + a * (nc[i].x - p.x), y: p.y + a * (nc[i].y - p.y) })) as [Point2, Point2, Point2, Point2];
+        best.shape = { corners: bc, center: { x: (bc[0].x + bc[1].x + bc[2].x + bc[3].x) / 4, y: (bc[0].y + bc[1].y + bc[2].y + bc[3].y) / 4 }, area: best.shape.area + a * (s.area - best.shape.area), fill: s.fill };
+        best.ttl = TTL;
+      } else tracks.push({ shape: s as TrackedShape, ttl: TTL });
     }
     tracksRef.current = tracks.filter((t) => t.ttl > 0);
     const tracked = tracksRef.current.map((t) => t.shape);
