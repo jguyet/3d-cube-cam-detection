@@ -150,8 +150,11 @@ export default function V2AlgoScanner() {
 
     // ---- draw ----
     const centres: { colour: string; frame: string }[] = [];
+    const NONCUBE = new Set(["dark", "skin", "unknown"]);   // never a real sticker
     const drawCell = (corners: { x: number; y: number }[], center: { x: number; y: number }, colour: string, detected: boolean, label: string, col: string) => {
-      if (!detected && !o.imagine) return;
+      // an IMAGINED (completed) cell is only legitimate on a real cube colour — never on a
+      // black gap or a beige/skin region (hand). Those are not stickers, so don't draw them.
+      if (!detected && (!o.imagine || NONCUBE.has(colour))) return;
       const fillCol = colour !== "unknown" ? colourHex(colour as never) : undefined;
       ctx.beginPath(); corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath();
       if (fillCol) { ctx.fillStyle = fillCol; ctx.globalAlpha = detected ? 0.5 : 0.28; ctx.fill(); ctx.globalAlpha = 1; }
