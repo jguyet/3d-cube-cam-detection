@@ -270,15 +270,16 @@ export class ShapeDetector {
     for (const s of shapes) {
       const [TL, TR, BR, BL] = s.corners;
       const a = dist(TL, TR), b = dist(TL, BL);
-      const long = Math.max(a, b), short = Math.min(a, b);
-      // Only split ELONGATED blocks: the short axis is ~ONE sticker (not a thin
-      // sliver, not a big square) and the long axis is a near-integer N≥2 units
-      // (3 same-colour facelets in a row → a long rectangle). Near-square shapes
-      // and slivers are left alone so we never invent facelets.
-      const n = Math.min(3, Math.round(long / unit));
-      const nearInt = Math.abs(long / unit - n) < 0.33;
-      if (short < 0.72 * unit || short > 1.4 * unit || long / short < 1.9 || n < 2 || !nearInt) { out.push(s); continue; }
-      const na = a >= b ? n : 1, nb = a >= b ? 1 : n;
+      // Split a merged block into na×nb unit cells — handles ELONGATED (1×N) AND
+      // SQUARE (2×2, 2×3, 3×3) blocks. Each axis is split into its own near-integer
+      // count of units. A single sticker (1×1) and a perspective-stretched sticker
+      // (a/unit ~1.3 → rounds to 1) are left alone; the tight near-integer residual
+      // (<0.33) prevents splitting a 1.6× lone sticker into a bogus 2×2.
+      const na = Math.min(3, Math.max(1, Math.round(a / unit)));
+      const nb = Math.min(3, Math.max(1, Math.round(b / unit)));
+      const aInt = Math.abs(a / unit - na) < 0.33, bInt = Math.abs(b / unit - nb) < 0.33;
+      const cellA = a / na, cellB = b / nb;   // each split cell must be ~one sticker
+      if (na * nb < 2 || !aInt || !bInt || cellA < 0.72 * unit || cellA > 1.4 * unit || cellB < 0.72 * unit || cellB > 1.4 * unit) { out.push(s); continue; }
       const P = (u: number, v: number): Point2 => ({
         x: (1 - u) * (1 - v) * TL.x + u * (1 - v) * TR.x + u * v * BR.x + (1 - u) * v * BL.x,
         y: (1 - u) * (1 - v) * TL.y + u * (1 - v) * TR.y + u * v * BR.y + (1 - u) * v * BL.y,
