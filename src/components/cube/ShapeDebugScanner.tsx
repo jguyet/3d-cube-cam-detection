@@ -21,7 +21,7 @@ export default function ShapeDebugScanner() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const [thr, setThr] = useState(95);
+  const [thr, setThr] = useState(72);
   const [adaptive, setAdaptive] = useState(true);
   const [showWhite, setShowWhite] = useState(true);
   const [showEdges, setShowEdges] = useState(false);

@@ -145,7 +145,7 @@ export default function HybridScanner() {
     // At 360px full-frame each sticker is only ~15px → colour-edge quads get
     // missed (live counter stuck at 4-6 even with 9 visible). Crop the zone from
     // the NATIVE video (720p+): stickers become ~3× bigger → far better recall.
-    let shapes = shapeRef.current!.detect(image, 100, region, true);
+    let shapes = shapeRef.current!.detect(image, 72, region, true);
     let cropWhites: Shape[] | null = null;   // border-tested whites from the hi-res crop
     const vw = video.videoWidth, vh = video.videoHeight;
     if (vw > W * 1.3) {
@@ -165,7 +165,7 @@ export default function HybridScanner() {
           center: { x: rx0 + s.center.x * sx, y: ry0 + s.center.y * sy },
           area: s.area * sx * sy, fill: s.fill,
         });
-        const hi = shapeRef.current!.detect(cropImg, 100, cropRegion, true);
+        const hi = shapeRef.current!.detect(cropImg, 72, cropRegion, true);
         if (hi.length > shapes.length) shapes = hi.map(mapBack);   // keep whichever scale found more
         // whites detected at high-res WITH the dark-border test (gap is several px wide here)
         cropWhites = shapeRef.current!.detectWhite(cropImg, cropRegion, false).map(mapBack);

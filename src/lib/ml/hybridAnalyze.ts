@@ -21,7 +21,7 @@ export interface AnalyzeResult {
 export function detectStickers(det: ShapeDetector, image: ImageData): { shapes: Shape[]; edgeCount: number; whiteCount: number } {
   const W = image.width, H = image.height;
   const region: Point2[] = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
-  let shapes = det.detect(image, 100, region, true);
+  let shapes = det.detect(image, 72, region, true);
   const edgeCount = shapes.length;
   // white pass — unioned, sticker-sized, no coloured-neighbour requirement
   const near = (a: Point2, b: Point2, s: number) => Math.hypot(a.x - b.x, a.y - b.y) < 0.6 * s;
