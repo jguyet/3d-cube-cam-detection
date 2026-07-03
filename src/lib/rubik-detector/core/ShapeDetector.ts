@@ -115,6 +115,28 @@ export class ShapeDetector {
     return shapes.filter((s) => this.movingShape(s, fg, w, h));
   }
 
+  // DEBUG: the dilated edge map used by detect() — lets a validation page show
+  // exactly what the detector "sees" (where gaps do/don't produce edges).
+  debugEdges(img: ImageData, colorThreshold = 125): { edges: Uint8Array; w: number; h: number } {
+    const w = img.width, h = img.height, d = img.data, frame = w * h;
+    const rA = new Float32Array(frame), gA = new Float32Array(frame), bA = new Float32Array(frame);
+    for (let i = 0, j = 0; i < d.length; i += 4, j++) { rA[j] = d[i]; gA[j] = d[i + 1]; bA[j] = d[i + 2]; }
+    const bR = this.blur(rA, w, h), bG = this.blur(gA, w, h), bB = this.blur(bA, w, h);
+    let edges: Uint8Array = new Uint8Array(frame);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gxR = (bR[i - w + 1] + 2 * bR[i + 1] + bR[i + w + 1]) - (bR[i - w - 1] + 2 * bR[i - 1] + bR[i + w - 1]);
+      const gyR = (bR[i + w - 1] + 2 * bR[i + w] + bR[i + w + 1]) - (bR[i - w - 1] + 2 * bR[i - w] + bR[i - w + 1]);
+      const gxG = (bG[i - w + 1] + 2 * bG[i + 1] + bG[i + w + 1]) - (bG[i - w - 1] + 2 * bG[i - 1] + bG[i + w - 1]);
+      const gyG = (bG[i + w - 1] + 2 * bG[i + w] + bG[i + w + 1]) - (bG[i - w - 1] + 2 * bG[i - w] + bG[i - w + 1]);
+      const gxB = (bB[i - w + 1] + 2 * bB[i + 1] + bB[i + w + 1]) - (bB[i - w - 1] + 2 * bB[i - 1] + bB[i + w - 1]);
+      const gyB = (bB[i + w - 1] + 2 * bB[i + w] + bB[i + w + 1]) - (bB[i - w - 1] + 2 * bB[i - w] + bB[i - w + 1]);
+      if (Math.sqrt(gxR * gxR + gyR * gyR + gxG * gxG + gyG * gyG + gxB * gxB + gyB * gyB) > colorThreshold) edges[i] = 1;
+    }
+    edges = this.dilate(edges, w, h, 1);
+    return { edges, w, h };
+  }
+
   // WHITE facelets are the hardest for the edge pass: they glare, desaturate, and
   // their outer border blends into a light background so the region bleeds out and
   // is dropped. Detect them directly by a brightness+low-saturation MASK instead
