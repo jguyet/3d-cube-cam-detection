@@ -7,6 +7,7 @@ import { colourHex, ColourMemory, darkFraction } from "@/lib/ml/stickerColor";
 import { graphFaces, detectCubeFaces, dedupeShapes, keepDominantCluster } from "@/lib/ml/shapeGraph";
 import { FaceTracker } from "@/lib/ml/faceTrack";
 import { CubeSim } from "@/lib/ml/cubeSim";
+import { CubeState } from "@/lib/ml/cubeState";
 import { cubeOrientation, type FaceObs } from "@/lib/ml/facePose";
 import type { CubeColour } from "@/lib/ml/stickerColor";
 
@@ -27,6 +28,7 @@ export default function V2AlgoScanner() {
   const trackRef = useRef<FaceTracker | null>(null);
   const cubeCanvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<CubeSim | null>(null);
+  const stateRef = useRef<CubeState | null>(null);
   const activeRef = useRef(false);      // presence hysteresis state
   const presMissRef = useRef(0);
   const rafRef = useRef(0);
@@ -119,14 +121,16 @@ export default function V2AlgoScanner() {
     const slots = o.stabilise ? trackRef.current!.update(faces[0] ?? null) : (trackRef.current!.reset(), null);
     const track = trackRef.current!;
 
-    // ---- feed the 3D SIM: colours (per face) + gyroscope (protected dominant + others) ----
-    const sim = simRef.current;
+    // ---- CONTINUOUS multi-frame state + 3D SIM ----
+    const sim = simRef.current, cstate = stateRef.current!;
     if (sim && faces.length) {
+      // feed each face to the temporal accumulator; paint only the CONFIRMED cells
       for (const f of faces) {
         const m = cell(f, 1, 1); if (!m || !CUBE.has(m.colour)) continue;
         const cells9: CubeColour[] = [];
         for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 3; gx++) cells9.push((cell(f, gx, gy)?.colour ?? "unknown") as CubeColour);
-        sim.setFace(m.colour as CubeColour, cells9);
+        const obsv = cstate.observe(m.colour as CubeColour, cells9);
+        if (obsv) sim.applyFace(obsv.faceId, cstate.faceColours(obsv.faceId));
       }
       const obs: FaceObs[] = [];
       // dominant face orientation from the PROTECTED slots (no teleport)
@@ -145,7 +149,7 @@ export default function V2AlgoScanner() {
       }
       const q = cubeOrientation(obs);
       if (q) sim.setOrientation(q);
-      if ((frameRef.current++ & 7) === 0) { const v = sim.validity(); setCubeInfo({ pct: Math.round(sim.completion() * 100), status: v.status, msg: v.msg }); }
+      if ((frameRef.current++ & 7) === 0) { const v = cstate.validity(); setCubeInfo({ pct: Math.round(cstate.completion() * 100), status: v.status, msg: v.msg }); }
     }
 
     // ---- draw ----
@@ -204,6 +208,7 @@ export default function V2AlgoScanner() {
       detRef.current = new ShapeDetector();
       memRef.current = new ColourMemory(); memRef.current.load(); memRef.current.seedCanonical();
       trackRef.current = new FaceTracker();
+      stateRef.current = new CubeState();
       if (cubeCanvasRef.current) { simRef.current = new CubeSim(cubeCanvasRef.current); simRef.current.resize(cubeCanvasRef.current.clientWidth || 320, cubeCanvasRef.current.clientHeight || 320); }
       const camera = new CameraStream();
       await camera.start(videoRef.current!);

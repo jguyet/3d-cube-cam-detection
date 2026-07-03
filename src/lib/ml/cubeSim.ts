@@ -5,9 +5,8 @@
 import * as THREE from "three";
 import { colourHex, type CubeColour } from "@/lib/ml/stickerColor";
 
-// standard scheme: each centre colour owns one cube face
-const SCHEME: Record<string, number> = { white: 0, yellow: 1, green: 2, blue: 3, red: 4, orange: 5 };
-// face i: outward normal + in-plane axes (u = grid +x, v = grid +y)
+// face i: outward normal + in-plane axes (u = grid +x, v = grid +y). faceIdx matches
+// CubeState.SCHEME (white 0, yellow 1, green 2, blue 3, red 4, orange 5).
 const FACES: { n: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3 }[] = [
   { n: new THREE.Vector3(0, 1, 0), u: new THREE.Vector3(1, 0, 0), v: new THREE.Vector3(0, 0, 1) },   // 0 white  (U +y)
   { n: new THREE.Vector3(0, -1, 0), u: new THREE.Vector3(1, 0, 0), v: new THREE.Vector3(0, 0, -1) },  // 1 yellow (D -y)
@@ -23,9 +22,7 @@ export class CubeSim {
   private camera: THREE.PerspectiveCamera;
   private group: THREE.Group;
   private facelets: THREE.Mesh[][] = [];      // [faceIdx][cell 0..8]
-  private state: (CubeColour | null)[][] = Array.from({ length: 6 }, () => Array(9).fill(null));
   private target = new THREE.Quaternion();
-  private scanned = new Set<number>();
   private raf = 0;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -63,47 +60,23 @@ export class CubeSim {
   // face i (by SCHEME) owns this centre colour — the standard scheme, always the same
   private static CENTRE: CubeColour[] = ["white", "yellow", "green", "blue", "red", "orange"];
   private paintCentres() {
-    CubeSim.CENTRE.forEach((c, fi) => { this.state[fi][4] = c; (this.facelets[fi][4].material as THREE.MeshStandardMaterial).color.set(colourHex(c)); });
+    CubeSim.CENTRE.forEach((c, fi) => (this.facelets[fi][4].material as THREE.MeshStandardMaterial).color.set(colourHex(c)));
   }
 
   resize(w: number, h: number) { this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
 
-  private CUBE = new Set<CubeColour>(["white", "yellow", "red", "orange", "green", "blue"]);
-
-  // colour one face from a scan (cells ordered by gx + gy*3); centre colour selects it.
-  // Only real cube colours are stored/painted — completion only ever grows.
-  setFace(centre: CubeColour, cells: CubeColour[]) {
-    const fi = SCHEME[centre]; if (fi === undefined) return;
-    this.scanned.add(fi);
-    for (let k = 0; k < 9 && k < cells.length; k++) {
-      const c = cells[k]; if (!this.CUBE.has(c)) continue;
-      this.state[fi][k] = c;
-      const mesh = this.facelets[fi][k]; if (mesh) (mesh.material as THREE.MeshStandardMaterial).color.set(colourHex(c));
+  // Pure renderer: paint a face's 9 cells from the CONFIRMED colours (null → unknown/dark).
+  // The temporal voting/consensus lives in CubeState; this just displays it.
+  applyFace(fi: number, colours: (CubeColour | null)[]) {
+    if (fi < 0 || fi > 5) return;
+    for (let k = 0; k < 9; k++) {
+      const c = colours[k]; const mesh = this.facelets[fi][k]; if (!mesh) continue;
+      (mesh.material as THREE.MeshStandardMaterial).color.set(c ? colourHex(c) : (k === 4 ? colourHex(CubeSim.CENTRE[fi]) : 0x2a2f3a));
     }
   }
 
-  // fraction of the 54 stickers known
-  completion(): number { let n = 0; for (const f of this.state) for (const c of f) if (c) n++; return n / 54; }
-
-  colourCounts(): Record<string, number> {
-    const m: Record<string, number> = {};
-    for (const f of this.state) for (const c of f) if (c) m[c] = (m[c] ?? 0) + 1;
-    return m;
-  }
-
-  // Rubik LAWS: every colour appears EXACTLY 9× (≤9 while scanning); centres all distinct
-  // (guaranteed by the scheme). Returns a status + reason for the UI.
-  validity(): { status: "valid" | "invalid" | "partial"; msg: string } {
-    const m = this.colourCounts();
-    for (const c of Object.keys(m)) if (m[c] > 9) return { status: "invalid", msg: `trop de ${c} (${m[c]}/9)` };
-    let filled = 0; for (const c of Object.keys(m)) filled += m[c];
-    if (filled === 54) return { status: "valid", msg: "cube complet & valide ✓" };
-    return { status: "partial", msg: `${Object.keys(m).length}/6 couleurs vues` };
-  }
-
   setOrientation(q: { x: number; y: number; z: number; w: number }) { this.target.set(q.x, q.y, q.z, q.w); }
-  scannedCount() { return this.scanned.size; }
-  reset() { this.scanned.clear(); this.state = Array.from({ length: 6 }, () => Array(9).fill(null)); for (const f of this.facelets) for (const m of f) (m.material as THREE.MeshStandardMaterial).color.set(0x2a2f3a); this.paintCentres(); }
+  reset() { for (const f of this.facelets) for (const m of f) (m.material as THREE.MeshStandardMaterial).color.set(0x2a2f3a); this.paintCentres(); }
 
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);
