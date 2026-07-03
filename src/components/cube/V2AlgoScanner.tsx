@@ -65,7 +65,7 @@ export default function V2AlgoScanner() {
     const region = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
     // COLOUR-AWARE discovery: colour boundaries split touching facelets, each shape is
     // tagged with its colour, black regions are rejected at the source.
-    let shapes = det.detect(image, o.thr, region, o.adaptive, { colour: true, mem });
+    let shapes = det.detect(image, o.thr, region, o.adaptive, { colour: true, mem, aspectMax: 5 });
     let whites = o.showWhite ? det.detectWhite(image, region, false) : [];
     if (o.splitBlocks) { shapes = det.splitMerged(shapes, image); whites = det.splitMerged(whites, image); }
     // FINAL BLACK FILTER: splitMerged / detectWhite sub-cells are created AFTER the

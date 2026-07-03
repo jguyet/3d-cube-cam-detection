@@ -95,7 +95,7 @@ export default function V3ZoneScanner() {
       if (o.showZone) { ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(0,224,255,0.5)"; ctx.setLineDash([5, 4]); ctx.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0); ctx.setLineDash([]); }
 
       // ---- v2 pipeline INSIDE the zone (hi-res crop for small cubes) ----
-      let shapes = det.detect(image, 72, region, true, { colour: true, mem });
+      let shapes = det.detect(image, 72, region, true, { colour: true, mem, aspectMax: 5 });
       let whites = det.detectWhite(image, region, false);
       const vw = video.videoWidth, vh = video.videoHeight;
       if (vw > W * 1.3) {
@@ -110,7 +110,7 @@ export default function V3ZoneScanner() {
           const cropRegion: Point2[] = [{ x: 0, y: 0 }, { x: cw, y: 0 }, { x: cw, y: ch }, { x: 0, y: ch }];
           const sx = (rx1 - rx0) / cw, sy = (ry1 - ry0) / ch;
           const mapBack = (s: Shape): Shape => ({ corners: s.corners.map((p) => ({ x: rx0 + p.x * sx, y: ry0 + p.y * sy })) as Point2[], center: { x: rx0 + s.center.x * sx, y: ry0 + s.center.y * sy }, area: s.area * sx * sy, fill: s.fill, colour: s.colour, rgb: s.rgb });
-          const hi = det.detect(cropImg, 72, cropRegion, true, { colour: true, mem });
+          const hi = det.detect(cropImg, 72, cropRegion, true, { colour: true, mem, aspectMax: 5 });
           if (hi.length > shapes.length) shapes = hi.map(mapBack);
           whites = det.detectWhite(cropImg, cropRegion, false).map(mapBack);
         }

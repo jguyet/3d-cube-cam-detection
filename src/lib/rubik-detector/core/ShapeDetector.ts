@@ -25,7 +25,7 @@ export interface Shape {
 // colour boundaries (different facelets that touch with no gap still separate) and
 // (2) tags each shape with its mean colour, REJECTING black regions (a black patch is
 // never a facelet). `mem` classifies against the learned palette when supplied.
-export interface DetectOpts { colour?: boolean; mem?: ColourMemory }
+export interface DetectOpts { colour?: boolean; mem?: ColourMemory; aspectMax?: number; minAreaFrac?: number }
 
 // Fast colour quantiser mirroring classifyColour's buckets — returns a small int label
 // (or -1 unknown) for the colour-boundary edge map. Kept inline to avoid a per-pixel
@@ -61,6 +61,7 @@ export class ShapeDetector {
     const w = img.width, h = img.height, d = img.data;
     const frame = w * h;
     const colourOn = !!opts?.colour, mem = opts?.mem;
+    const aspectMax = opts?.aspectMax ?? 3.4;   // higher lets FORESHORTENED (oblique) stickers through
 
     // raw R/G/B (for colour edges) + luma/chroma (for the background model)
     const rA = new Float32Array(frame), gA = new Float32Array(frame), bA = new Float32Array(frame);
@@ -128,7 +129,7 @@ export class ShapeDetector {
     const vis = new Uint8Array(frame);
     const stack: number[] = [];
     const shapes: Shape[] = [];
-    const minArea = frame * 0.0006, maxArea = frame * 0.22;
+    const minArea = frame * (opts?.minAreaFrac ?? 0.0006), maxArea = frame * 0.22;
 
     for (let s0 = 0; s0 < frame; s0++) {
       if (edges[s0] || vis[s0]) continue;
@@ -158,7 +159,7 @@ export class ShapeDetector {
       const s1 = Math.hypot(rect.corners[0].x - rect.corners[1].x, rect.corners[0].y - rect.corners[1].y);
       const s2 = Math.hypot(rect.corners[1].x - rect.corners[2].x, rect.corners[1].y - rect.corners[2].y);
       const aspect = Math.max(s1, s2) / (Math.min(s1, s2) || 1);
-      if (fill < 0.5 || aspect > 3.4) continue;
+      if (fill < 0.5 || aspect > aspectMax) continue;
 
       let cx = 0, cy = 0;
       for (const c of rect.corners) { cx += c.x; cy += c.y; }
