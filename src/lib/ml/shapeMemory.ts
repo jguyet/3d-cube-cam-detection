@@ -58,9 +58,12 @@ export class ShapeMemory {
     if (!this.ready()) return true;   // bootstrap: accept until we've learned enough
     const f = feats(s); if (!f) return true;
     const sd = (st: Stat, floor: number) => Math.max(floor, Math.sqrt(Math.max(0, st.v)));
-    if (f.fill < this.fill.m - 3 * sd(this.fill, 0.08)) return false;        // too hollow
-    if (f.aspect > this.aspect.m + 3.5 * sd(this.aspect, 0.15) + 0.2) return false; // too elongated
-    if (f.skew > this.skew.m + 3 * sd(this.skew, 8) + 8) return false;       // corners too irregular
+    // Lenient — perspective shears stickers (aspect↑, corner-skew↑) and shading
+    // varies fill, so only reject CLEAR outliers (a background L-shape / thin sliver
+    // / very hollow blob), never a foreshortened facelet.
+    if (f.fill < this.fill.m - 4 * sd(this.fill, 0.1) && f.fill < 0.55) return false;   // genuinely hollow
+    if (f.aspect > this.aspect.m + 4 * sd(this.aspect, 0.2) + 0.5) return false;         // clearly elongated
+    if (f.skew > this.skew.m + 4 * sd(this.skew, 10) + 15) return false;                 // corners very irregular
     return true;
   }
 

@@ -235,7 +235,7 @@ export default function HybridScanner() {
     if (ref && shapes.length >= 3) {
       shapes = shapes.filter((s) => {
         const r = Math.sqrt(Math.max(1, s.area)) / ref;
-        if (r < 0.62 || r > 1.4) { nSize++; return false; }   // reject noise-MERGED pairs (~1.41×) that corrupt tracks & flicker the grid
+        if (r < 0.55 || r > 1.6) { nSize++; return false; }   // perspective-tolerant (near sticker bigger, far smaller); gross merges/fragments still cut
         return true;
       });
     }
@@ -577,7 +577,7 @@ export default function HybridScanner() {
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
     const pal = memRef.current ? memRef.current.ready() : 0;
     const shpReady = shapeMemRef.current?.ready() ? "✓" : "…";
-    ctx.fillText(`${nLinks} liaison(s) · ${tracked.length} stk${nFound ? `+${nFound}` : ""} · palette ${pal}/6 · forme ${shpReady}${nShape ? ` −${nShape}FP` : ""}${nSkin ? ` · ${nSkin} peau` : ""}`, 14, 25);
+    ctx.fillText(`${nLinks} liais · ${tracked.length} stk${nFound ? `+${nFound}` : ""} · pal ${pal}/6 · rejets: ${nSkin}noir/peau ${nSize}taille ${nShape}forme`, 14, 25);
   };
 
   const start = async () => {
