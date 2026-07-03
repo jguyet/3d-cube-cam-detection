@@ -49,32 +49,37 @@ export function graphFaces(shapes: Shape[], oriTol = 0.44): GraphResult {
   const sides = shapes.map(side).sort((a, b) => a - b);
   const med = sides[sides.length >> 1] || 1;
 
-  // Grid PITCH from the actual spacing, NOT the sticker size — a gapped cube has a
-  // pitch well above one sticker side, and a size-based threshold would fail to link
-  // the (obviously present) grid. Use the median nearest-neighbour distance.
-  const nn: number[] = [];
+  // PER-NODE LOCAL PITCH — a single global pitch is WRONG when two visible faces sit at
+  // different distances (one near, one far → different projected pitch): the global median
+  // lands between them and breaks BOTH. Each node instead gets its own local spacing (the
+  // robust median of its 3 nearest non-duplicate neighbours), so a near face links at its
+  // big pitch and a far face at its small pitch, and the scale boundary at the fold is a
+  // natural cut (min of the two local pitches won't reach across it).
+  const localPitch = new Float64Array(N);
+  const allLp: number[] = [];
   for (let i = 0; i < N; i++) {
-    let best = Infinity;
-    for (let j = 0; j < N; j++) if (j !== i) { const d = Math.hypot(c[i].x - c[j].x, c[i].y - c[j].y); if (d < best) best = d; }
-    if (isFinite(best)) nn.push(best);
+    const ds: number[] = [];
+    for (let j = 0; j < N; j++) if (j !== i) { const d = Math.hypot(c[i].x - c[j].x, c[i].y - c[j].y); if (d > 0.3 * side(shapes[i])) ds.push(d); }
+    ds.sort((a, b) => a - b);
+    const k = Math.min(3, ds.length);
+    localPitch[i] = k ? ds[(k - 1) >> 1] : med * 1.2;   // median of the 3 nearest
+    allLp.push(localPitch[i]);
   }
-  nn.sort((a, b) => a - b);
-  const pitch0 = nn[nn.length >> 1] || med * 1.2;   // one grid step
-  const thr = 1.6 * pitch0;     // links: orthogonal (~1·pitch) AND diagonals (~1.41·pitch)
-  const orthoMax = 1.28 * pitch0;
+  allLp.sort((a, b) => a - b);
+  const pitch0 = allLp[allLp.length >> 1] || med * 1.2;   // global fallback only
 
-  // adjacency (orthogonal + diagonal neighbours — diagonals add redundancy so a single
-  // missing orthogonal link can't split an obviously-connected face, exactly like the
-  // \ and / in a 3×3 sketch).
+  // adjacency (orthogonal + diagonal neighbours) using each pair's LOCAL pitch. Diagonals
+  // (~1.41·pitch) add redundancy so a single missing orthogonal link can't split a face.
   const ang = shapes.map(shapeAngle);
   const adj: number[][] = Array.from({ length: N }, () => []);
   const edges: [number, number][] = [];       // ortho-only, used for rotation estimate
   for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
     const d = Math.hypot(c[i].x - c[j].x, c[i].y - c[j].y);
-    if (d >= thr) continue;
+    const lp = Math.min(localPitch[i], localPitch[j]);
+    if (d >= 1.55 * lp) continue;                     // ortho (~1) + diagonal (~1.41)
     if (angDiff(ang[i], ang[j]) > oriTol) continue;   // FOLD cut: orientation jump = different face
     adj[i].push(j); adj[j].push(i); nodes[i].deg++; nodes[j].deg++;
-    if (d <= orthoMax) edges.push([i, j]);     // keep diagonals OUT of rotation math
+    if (d <= 1.22 * lp) edges.push([i, j]);           // keep diagonals OUT of rotation math
   }
 
   // connected components
