@@ -172,6 +172,11 @@ export class ShapeDetector {
         const std = (Math.sqrt(Math.max(0, sumR2 / area - mr * mr)) + Math.sqrt(Math.max(0, sumG2 / area - mg * mg)) + Math.sqrt(Math.max(0, sumB2 / area - mb * mb)) / 1) / 3;
         const homogeneity = Math.max(0, 1 - std / 60);
         if (std > 52) continue;             // too heterogeneous → not a uniform facelet
+        // NEAR-BLACK gate on the mean, independent of the palette: a dark low-saturation
+        // patch (gap/shadow/black plastic) must NEVER be snapped to one of the 6 colours
+        // by the closed-set. A dark but SATURATED patch is a dark facelet → kept.
+        const mmx = Math.max(mr, mg, mb), mmn = Math.min(mr, mg, mb), msat = mmx > 0 ? (mmx - mmn) / mmx : 0;
+        if (mmx < 70 && msat < 0.4) continue;
         const colour = mem ? mem.classify(rgb) : classifyColour(rgb);
         if (colour === "dark") continue;    // BLACK region → not a facelet, reject at discovery
         shape.colour = colour; shape.rgb = rgb; shape.homogeneity = homogeneity;

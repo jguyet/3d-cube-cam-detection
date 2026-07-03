@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
-import { colourHex, ColourMemory } from "@/lib/ml/stickerColor";
+import { colourHex, ColourMemory, darkFraction } from "@/lib/ml/stickerColor";
 import { graphFaces, detectCubeFaces } from "@/lib/ml/shapeGraph";
 import { FaceTracker } from "@/lib/ml/faceTrack";
 
@@ -61,6 +61,11 @@ export default function V2AlgoScanner() {
     let shapes = det.detect(image, o.thr, region, o.adaptive, { colour: true, mem });
     let whites = o.showWhite ? det.detectWhite(image, region, false) : [];
     if (o.splitBlocks) { shapes = det.splitMerged(shapes, image); whites = det.splitMerged(whites, image); }
+    // FINAL BLACK FILTER: splitMerged / detectWhite sub-cells are created AFTER the
+    // discovery-time black rejection, so re-check here — a cell whose interior is >20%
+    // black is a gap/shadow, never a facelet. Nothing black survives to the graph.
+    const notBlack = (s: { corners: { x: number; y: number }[] }) => darkFraction(s.corners, image.data, W, H) <= 0.2;
+    shapes = shapes.filter(notBlack); whites = whites.filter(notBlack);
     const all = [...shapes, ...whites];
 
     // ---- graph links (raw structure) ----
