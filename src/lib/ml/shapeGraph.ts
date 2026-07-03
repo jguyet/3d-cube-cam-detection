@@ -148,6 +148,28 @@ export function graphFaces(shapes: Shape[], oriTol = 0.18): GraphResult {
   return { nodes, faces, edges };
 }
 
+// SELF-LOCALISATION (no ML): the cube is ONE cluster of mutually-adjacent faces; a face
+// from background clutter sits alone, far from the cube. Keep only the largest connected
+// group of faces (adjacent = centroids within ~3.5·pitch, i.e. sharing a cube edge). This
+// gives the ML-zone's background rejection for free — no model, no lag, no jittery bbox.
+export function keepDominantCluster(faces: DetectedFace[]): DetectedFace[] {
+  if (faces.length <= 1) return faces;
+  const cen = (f: DetectedFace) => { let x = 0, y = 0; for (const c of f.cells) { x += c.center.x; y += c.center.y; } return { x: x / f.cells.length, y: y / f.cells.length }; };
+  const ctr = faces.map(cen);
+  const adj: number[][] = faces.map(() => []);
+  for (let i = 0; i < faces.length; i++) for (let j = i + 1; j < faces.length; j++) {
+    const lim = 3.5 * Math.max(faces[i].pitch, faces[j].pitch);
+    if (Math.hypot(ctr[i].x - ctr[j].x, ctr[i].y - ctr[j].y) < lim) { adj[i].push(j); adj[j].push(i); }
+  }
+  const comp = new Int32Array(faces.length).fill(-1); let nc = 0;
+  for (let i = 0; i < faces.length; i++) { if (comp[i] >= 0) continue; const st = [i]; comp[i] = nc; while (st.length) { const n = st.pop()!; for (const m of adj[n]) if (comp[m] < 0) { comp[m] = nc; st.push(m); } } nc++; }
+  // pick the component with the most detected cells (the cube), keep 1..3 faces of it
+  const score = new Array(nc).fill(0);
+  for (let i = 0; i < faces.length; i++) score[comp[i]] += faces[i].count;
+  let best = 0; for (let k = 1; k < nc; k++) if (score[k] > score[best]) best = k;
+  return faces.filter((_, i) => comp[i] === best);
+}
+
 // ---- least-squares affine  (gx,gy,1) -> (px,py) ----
 function invert3(m: number[][]): number[][] | null {
   const d = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);

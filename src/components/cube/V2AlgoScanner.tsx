@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { colourHex, ColourMemory, darkFraction } from "@/lib/ml/stickerColor";
-import { graphFaces, detectCubeFaces, dedupeShapes } from "@/lib/ml/shapeGraph";
+import { graphFaces, detectCubeFaces, dedupeShapes, keepDominantCluster } from "@/lib/ml/shapeGraph";
 import { FaceTracker } from "@/lib/ml/faceTrack";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -81,7 +81,9 @@ export default function V2AlgoScanner() {
     }
 
     // ---- DETECT FACES: each face is a full 3×3 (9 cells), detected + completed ----
-    const faces = detectCubeFaces(all, { image, mem });
+    // Self-localisation (no ML): keep only the dominant cluster of adjacent faces → the
+    // cube; isolated background faces are dropped. Free background rejection, no model.
+    const faces = keepDominantCluster(detectCubeFaces(all, { image, mem }));
 
     // TEMPORAL STABILISATION of the dominant face (anti-shift): feed it to the tracker
     // and draw the smoothed, colour-voted, label-stable slots instead of the raw cells.
