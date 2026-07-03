@@ -16,11 +16,19 @@ export interface FaceCell {
   rgb: [number, number, number] | null; colour: CubeColour; black: boolean;
 }
 export interface DetectedFace { cells: FaceCell[]; rot: number; pitch: number; count: number }
-export interface FaceOpts { image?: ImageData; mem?: ColourMemory; minDetected?: number }
+export interface FaceOpts { image?: ImageData; mem?: ColourMemory; minDetected?: number; oriTol?: number }
 
 const side = (s: Shape) => Math.sqrt(Math.max(1, s.area));
 
-export function graphFaces(shapes: Shape[]): GraphResult {
+// A shape's own quad orientation, folded to [0, π/2). Stickers on ONE face share it;
+// across a cube edge (fold) it jumps — so it cuts links that bridge two faces.
+const shapeAngle = (s: Shape): number => {
+  const dx = s.corners[1].x - s.corners[0].x, dy = s.corners[1].y - s.corners[0].y;
+  const a = Math.atan2(dy, dx); return ((a % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2);
+};
+const angDiff = (a: number, b: number) => { const d = Math.abs(a - b); return Math.min(d, Math.PI / 2 - d); };
+
+export function graphFaces(shapes: Shape[], oriTol = 0.44): GraphResult {
   const N = shapes.length;
   const nodes: GraphNode[] = shapes.map((s) => ({ shape: s, gx: 0, gy: 0, face: -1, deg: 0 }));
   if (N < 2) return { nodes, faces: [], edges: [] };
@@ -45,11 +53,13 @@ export function graphFaces(shapes: Shape[]): GraphResult {
   // adjacency (orthogonal + diagonal neighbours — diagonals add redundancy so a single
   // missing orthogonal link can't split an obviously-connected face, exactly like the
   // \ and / in a 3×3 sketch).
+  const ang = shapes.map(shapeAngle);
   const adj: number[][] = Array.from({ length: N }, () => []);
   const edges: [number, number][] = [];       // ortho-only, used for rotation estimate
   for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
     const d = Math.hypot(c[i].x - c[j].x, c[i].y - c[j].y);
     if (d >= thr) continue;
+    if (angDiff(ang[i], ang[j]) > oriTol) continue;   // FOLD cut: orientation jump = different face
     adj[i].push(j); adj[j].push(i); nodes[i].deg++; nodes[j].deg++;
     if (d <= orthoMax) edges.push([i, j]);     // keep diagonals OUT of rotation math
   }
@@ -140,7 +150,7 @@ function fitAffine(pts: { gx: number; gy: number; x: number; y: number }[]): ((g
 // sticker should be — classified through the learned palette (ColourMemory, closed-set at
 // 6), and flagged black (a black cell is not a real facelet).
 export function detectCubeFaces(shapes: Shape[], opts: FaceOpts = {}): DetectedFace[] {
-  const { image, mem, minDetected = 4 } = opts;
+  const { image, mem, minDetected = 4, oriTol = 0.44 } = opts;
   const px = image?.data, iw = image?.width ?? 0, ih = image?.height ?? 0;
   const readColour = (corners: { x: number; y: number }[]): { rgb: [number, number, number] | null; colour: CubeColour; black: boolean } => {
     if (!px) return { rgb: null, colour: "unknown", black: false };
@@ -150,7 +160,7 @@ export function detectCubeFaces(shapes: Shape[], opts: FaceOpts = {}): DetectedF
     const colour = mem ? mem.classify(rgb) : classifyColour(rgb);
     return { rgb, colour, black };
   };
-  const { faces } = graphFaces(shapes);
+  const { faces } = graphFaces(shapes, oriTol);
   const out: DetectedFace[] = [];
   for (const face of faces) {
     if (face.nodes.length < minDetected) continue;
@@ -159,36 +169,53 @@ export function detectCubeFaces(shapes: Shape[], opts: FaceOpts = {}): DetectedF
     const byCell = new Map<string, GraphNode>();
     for (const n of face.nodes) byCell.set(`${n.gx},${n.gy}`, n);
 
-    // choose the 3×3 offset (ox,oy) that contains the most detected cells
-    let bestOx = 0, bestOy = 0, bestC = -1;
-    for (let oy = Math.min(0, face.h - 3); oy <= Math.max(0, face.h - 3); oy++)
-      for (let ox = Math.min(0, face.w - 3); ox <= Math.max(0, face.w - 3); ox++) {
-        let cnt = 0;
-        for (const n of face.nodes) if (n.gx >= ox && n.gx < ox + 3 && n.gy >= oy && n.gy < oy + 3) cnt++;
-        if (cnt > bestC) { bestC = cnt; bestOx = ox; bestOy = oy; }
-      }
+    // GREEDILY emit as many non-overlapping 3×3 windows as the component supports: a big
+    // component (a fold that survived the orientation cut, or a 3×N strip) yields several
+    // faces instead of one. Each round takes the 3×3 window covering the most still-UNUSED
+    // detected cells; stop when the best window has fewer than minDetected fresh cells.
+    const used = new Set<string>();
+    for (let iter = 0; iter < 6; iter++) {
+      let bestOx = 0, bestOy = 0, bestC = -1;
+      for (let oy = Math.min(0, face.h - 3); oy <= Math.max(0, face.h - 3); oy++)
+        for (let ox = Math.min(0, face.w - 3); ox <= Math.max(0, face.w - 3); ox++) {
+          let cnt = 0;
+          for (const n of face.nodes) if (!used.has(`${n.gx},${n.gy}`) && n.gx >= ox && n.gx < ox + 3 && n.gy >= oy && n.gy < oy + 3) cnt++;
+          if (cnt > bestC) { bestC = cnt; bestOx = ox; bestOy = oy; }
+        }
+      if (bestC < minDetected) break;
 
-    const cells: FaceCell[] = [];
-    for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) {
-      const gx = bestOx + dx, gy = bestOy + dy;
-      const hit = byCell.get(`${gx},${gy}`);
-      if (hit) {
-        // prefer the colour already computed during shape discovery (detect() learned it)
-        const col = hit.shape.colour
-          ? { rgb: (hit.shape.rgb ?? null) as [number, number, number] | null, colour: hit.shape.colour, black: false }
-          : readColour(hit.shape.corners);
-        cells.push({ gx: dx, gy: dy, center: hit.shape.center, corners: hit.shape.corners, detected: true, shape: hit.shape, ...col });
-        continue;
+      const cells: FaceCell[] = [];
+      for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) {
+        const gx = bestOx + dx, gy = bestOy + dy;
+        const hit = byCell.get(`${gx},${gy}`);
+        if (hit && !used.has(`${gx},${gy}`)) {
+          used.add(`${gx},${gy}`);
+          const col = hit.shape.colour
+            ? { rgb: (hit.shape.rgb ?? null) as [number, number, number] | null, colour: hit.shape.colour, black: false }
+            : readColour(hit.shape.corners);
+          cells.push({ gx: dx, gy: dy, center: hit.shape.center, corners: hit.shape.corners, detected: true, shape: hit.shape, ...col });
+          continue;
+        }
+        const c0 = predict(gx, gy), cX = predict(gx + 1, gy), cY = predict(gx, gy + 1);
+        const ux = (cX.x - c0.x) * 0.5, uy = (cX.y - c0.y) * 0.5, vX = (cY.x - c0.x) * 0.5, vY = (cY.y - c0.y) * 0.5;
+        const corners = [
+          { x: c0.x - ux - vX, y: c0.y - uy - vY }, { x: c0.x + ux - vX, y: c0.y + uy - vY },
+          { x: c0.x + ux + vX, y: c0.y + uy + vY }, { x: c0.x - ux + vX, y: c0.y - uy + vY },
+        ];
+        cells.push({ gx: dx, gy: dy, center: c0, corners, detected: false, ...readColour(corners) });
       }
-      const c0 = predict(gx, gy), cX = predict(gx + 1, gy), cY = predict(gx, gy + 1);
-      const ux = (cX.x - c0.x) * 0.5, uy = (cX.y - c0.y) * 0.5, vX = (cY.x - c0.x) * 0.5, vY = (cY.y - c0.y) * 0.5;
-      const corners = [
-        { x: c0.x - ux - vX, y: c0.y - uy - vY }, { x: c0.x + ux - vX, y: c0.y + uy - vY },
-        { x: c0.x + ux + vX, y: c0.y + uy + vY }, { x: c0.x - ux + vX, y: c0.y - uy + vY },
-      ];
-      cells.push({ gx: dx, gy: dy, center: c0, corners, detected: false, ...readColour(corners) });
+      out.push({ cells, rot: face.rot, pitch: face.pitch, count: bestC });
     }
-    out.push({ cells, rot: face.rot, pitch: face.pitch, count: bestC });
   }
-  return out.sort((a, b) => b.count - a.count);
+  // GLOBAL DEDUP: greedy multi-window (and folded components) can emit near-duplicate
+  // faces. Keep the higher-count face when two centroids sit within ~0.7·pitch.
+  out.sort((a, b) => b.count - a.count);
+  const kept: DetectedFace[] = [];
+  const cen = (f: DetectedFace) => { let x = 0, y = 0; for (const c of f.cells) { x += c.center.x; y += c.center.y; } return { x: x / f.cells.length, y: y / f.cells.length }; };
+  for (const f of out) {
+    const fc = cen(f);
+    if (kept.some((g) => Math.hypot(cen(g).x - fc.x, cen(g).y - fc.y) < 0.7 * f.pitch)) continue;
+    kept.push(f);
+  }
+  return kept;
 }
