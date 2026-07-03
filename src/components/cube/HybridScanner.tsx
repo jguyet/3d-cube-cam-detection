@@ -232,7 +232,7 @@ export default function HybridScanner() {
     // facelets in a row are detected as one long rectangle — cut them back into
     // unit stickers so each counts. Off by default (would over-split under the
     // perspective size spread of a normal gapped cube).
-    if (splitRef.current) shapes = shapeRef.current!.splitMerged(shapes);
+    if (splitRef.current) shapes = shapeRef.current!.splitMerged(shapes, image);
 
     // ---- SIZE GATE with TEMPORAL SIZE MEMORY (user's insight): sticker size can't
     // switch abruptly — it drifts SMOOTHLY as the cube moves nearer/farther. So the

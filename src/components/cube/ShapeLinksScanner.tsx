@@ -50,7 +50,7 @@ export default function ShapeLinksScanner() {
     let whites = o.showWhite ? det.detectWhite(image, region, false) : [];
     // SPLIT MERGED same-colour blocks (gap-less cubes) into unit cells BEFORE links,
     // so a 3-in-a-row merged block becomes 3 stickers that link into the grid.
-    if (o.splitBlocks) { shapes = det.splitMerged(shapes); whites = det.splitMerged(whites); }
+    if (o.splitBlocks) { shapes = det.splitMerged(shapes, image); whites = det.splitMerged(whites, image); }
     const all = [...shapes, ...whites];
 
     // ---- LINKS between shapes ----

@@ -261,12 +261,19 @@ export class ShapeDetector {
   // unit side ≈ the median of every shape's SHORT side (a merged block is only
   // long on one axis, so its short side is still one sticker), then any shape that
   // spans ~N units on an axis is cut into N. Each cell becomes a real sticker.
-  splitMerged(shapes: Shape[]): Shape[] {
+  splitMerged(shapes: Shape[], img?: ImageData): Shape[] {
     if (shapes.length < 3) return shapes;
     const shortOf = (s: Shape) => Math.min(dist(s.corners[0], s.corners[1]), dist(s.corners[1], s.corners[2]));
     const shorts = shapes.map(shortOf).sort((a, b) => a - b);
     const unit = shorts[shorts.length >> 1] || 1;
     const out: Shape[] = [];
+    // luminance sampler (when the image is provided we VERIFY a real seam before splitting)
+    const px = img?.data, iw = img?.width ?? 0, ih = img?.height ?? 0;
+    const lumaAt = (x: number, y: number): number => {
+      if (!px) return -1; const xi = Math.round(x), yi = Math.round(y);
+      if (xi < 0 || yi < 0 || xi >= iw || yi >= ih) return -1;
+      const i = (yi * iw + xi) * 4; return 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    };
     for (const s of shapes) {
       const [TL, TR, BR, BL] = s.corners;
       const a = dist(TL, TR), b = dist(TL, BL);
@@ -284,6 +291,26 @@ export class ShapeDetector {
         x: (1 - u) * (1 - v) * TL.x + u * (1 - v) * TR.x + u * v * BR.x + (1 - u) * v * BL.x,
         y: (1 - u) * (1 - v) * TL.y + u * (1 - v) * TR.y + u * v * BR.y + (1 - u) * v * BL.y,
       });
+      // VERIFY A SEAM (when the image is given): only split along an internal grid
+      // line if the luminance there actually DIPS/PERTURBS vs the cell interiors — a
+      // truly uniform block (one real facelet, no seam) is left whole. Gap-less cubes
+      // still have a faint bevel/seam between tiles → a small dip is enough.
+      if (px) {
+        const cellL = (i: number, j: number) => { const c = P((i + 0.5) / na, (j + 0.5) / nb); return lumaAt(c.x, c.y); };
+        let seam = false;
+        // vertical internal lines
+        for (let i = 1; i < na && !seam; i++) for (let j = 0; j < nb; j++) {
+          const on = P(i / na, (j + 0.5) / nb); const L = lumaAt(on.x, on.y);
+          const c = (cellL(i - 1, j) + cellL(i, j)) / 2;
+          if (L >= 0 && c > 0 && (c - L) > 0.10 * c + 6) { seam = true; break; }   // line darker than cells
+        }
+        for (let j = 1; j < nb && !seam; j++) for (let i = 0; i < na; i++) {
+          const on = P((i + 0.5) / na, j / nb); const L = lumaAt(on.x, on.y);
+          const c = (cellL(i, j - 1) + cellL(i, j)) / 2;
+          if (L >= 0 && c > 0 && (c - L) > 0.10 * c + 6) { seam = true; break; }
+        }
+        if (!seam) { out.push(s); continue; }   // no seam anywhere → it's one facelet, don't split
+      }
       for (let i = 0; i < na; i++) for (let j = 0; j < nb; j++) {
         const c0 = P(i / na, j / nb), c1 = P((i + 1) / na, j / nb), c2 = P((i + 1) / na, (j + 1) / nb), c3 = P(i / na, (j + 1) / nb);
         out.push({
