@@ -9,6 +9,9 @@ export interface GraphNode { shape: Shape; gx: number; gy: number; face: number;
 export interface GraphFace { nodes: GraphNode[]; rot: number; pitch: number; w: number; h: number }
 export interface GraphResult { nodes: GraphNode[]; faces: GraphFace[]; edges: [number, number][] }
 
+export interface FaceCell { gx: number; gy: number; center: { x: number; y: number }; corners: { x: number; y: number }[]; detected: boolean; shape?: Shape }
+export interface DetectedFace { cells: FaceCell[]; rot: number; pitch: number; count: number }
+
 const side = (s: Shape) => Math.sqrt(Math.max(1, s.area));
 
 export function graphFaces(shapes: Shape[]): GraphResult {
@@ -96,4 +99,68 @@ export function graphFaces(shapes: Shape[]): GraphResult {
     faces.push({ nodes: assigned.map((i) => nodes[i]), rot, pitch, w, h });
   }
   return { nodes, faces, edges };
+}
+
+// ---- least-squares affine  (gx,gy,1) -> (px,py) ----
+function invert3(m: number[][]): number[][] | null {
+  const d = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  if (Math.abs(d) < 1e-9) return null;
+  const c = (a: number, b: number, cc: number, dd: number) => a * dd - b * cc;
+  return [
+    [c(m[1][1], m[1][2], m[2][1], m[2][2]) / d, c(m[0][2], m[0][1], m[2][2], m[2][1]) / d, c(m[0][1], m[0][2], m[1][1], m[1][2]) / d],
+    [c(m[1][2], m[1][0], m[2][2], m[2][0]) / d, c(m[0][0], m[0][2], m[2][0], m[2][2]) / d, c(m[0][2], m[0][0], m[1][2], m[1][0]) / d],
+    [c(m[1][0], m[1][1], m[2][0], m[2][1]) / d, c(m[0][1], m[0][0], m[2][1], m[2][0]) / d, c(m[0][0], m[0][1], m[1][0], m[1][1]) / d],
+  ];
+}
+function fitAffine(pts: { gx: number; gy: number; x: number; y: number }[]): ((gx: number, gy: number) => { x: number; y: number }) | null {
+  let Sxx = 0, Sxy = 0, Sx1 = 0, Syy = 0, Sy1 = 0, S11 = 0, bXx = 0, bXy = 0, bX1 = 0, bYx = 0, bYy = 0, bY1 = 0;
+  for (const p of pts) {
+    Sxx += p.gx * p.gx; Sxy += p.gx * p.gy; Sx1 += p.gx; Syy += p.gy * p.gy; Sy1 += p.gy; S11 += 1;
+    bXx += p.x * p.gx; bXy += p.x * p.gy; bX1 += p.x; bYx += p.y * p.gx; bYy += p.y * p.gy; bY1 += p.y;
+  }
+  const inv = invert3([[Sxx, Sxy, Sx1], [Sxy, Syy, Sy1], [Sx1, Sy1, S11]]); if (!inv) return null;
+  const sol = (b0: number, b1: number, b2: number) => [inv[0][0] * b0 + inv[0][1] * b1 + inv[0][2] * b2, inv[1][0] * b0 + inv[1][1] * b1 + inv[1][2] * b2, inv[2][0] * b0 + inv[2][1] * b1 + inv[2][2] * b2];
+  const A = sol(bXx, bXy, bX1), B = sol(bYx, bYy, bY1);
+  return (gx, gy) => ({ x: A[0] * gx + A[1] * gy + A[2], y: B[0] * gx + B[1] * gy + B[2] });
+}
+
+// DETECT CUBE FACES — a face is ALWAYS a full 3×3. From each graph component we fit
+// the affine (uniform pitch), pick the 3×3 window covering the most detected cells,
+// and emit all 9 cells (detected ones use their real quad; missing ones are predicted
+// so the face is always complete). minDetected guards against noise components.
+export function detectCubeFaces(shapes: Shape[], minDetected = 4): DetectedFace[] {
+  const { faces } = graphFaces(shapes);
+  const out: DetectedFace[] = [];
+  for (const face of faces) {
+    if (face.nodes.length < minDetected) continue;
+    const pts = face.nodes.map((n) => ({ gx: n.gx, gy: n.gy, x: n.shape.center.x, y: n.shape.center.y }));
+    const predict = fitAffine(pts); if (!predict) continue;
+    const byCell = new Map<string, GraphNode>();
+    for (const n of face.nodes) byCell.set(`${n.gx},${n.gy}`, n);
+
+    // choose the 3×3 offset (ox,oy) that contains the most detected cells
+    let bestOx = 0, bestOy = 0, bestC = -1;
+    for (let oy = Math.min(0, face.h - 3); oy <= Math.max(0, face.h - 3); oy++)
+      for (let ox = Math.min(0, face.w - 3); ox <= Math.max(0, face.w - 3); ox++) {
+        let cnt = 0;
+        for (const n of face.nodes) if (n.gx >= ox && n.gx < ox + 3 && n.gy >= oy && n.gy < oy + 3) cnt++;
+        if (cnt > bestC) { bestC = cnt; bestOx = ox; bestOy = oy; }
+      }
+
+    const cells: FaceCell[] = [];
+    for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) {
+      const gx = bestOx + dx, gy = bestOy + dy;
+      const hit = byCell.get(`${gx},${gy}`);
+      if (hit) { cells.push({ gx: dx, gy: dy, center: hit.shape.center, corners: hit.shape.corners, detected: true, shape: hit.shape }); continue; }
+      const c0 = predict(gx, gy), cX = predict(gx + 1, gy), cY = predict(gx, gy + 1);
+      const ux = (cX.x - c0.x) * 0.5, uy = (cX.y - c0.y) * 0.5, vX = (cY.x - c0.x) * 0.5, vY = (cY.y - c0.y) * 0.5;
+      const corners = [
+        { x: c0.x - ux - vX, y: c0.y - uy - vY }, { x: c0.x + ux - vX, y: c0.y + uy - vY },
+        { x: c0.x + ux + vX, y: c0.y + uy + vY }, { x: c0.x - ux + vX, y: c0.y - uy + vY },
+      ];
+      cells.push({ gx: dx, gy: dy, center: c0, corners, detected: false });
+    }
+    out.push({ cells, rot: face.rot, pitch: face.pitch, count: bestC });
+  }
+  return out.sort((a, b) => b.count - a.count);
 }
