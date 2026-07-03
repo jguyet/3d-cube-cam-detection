@@ -20,6 +20,19 @@ export interface FaceOpts { image?: ImageData; mem?: ColourMemory; minDetected?:
 
 const side = (s: Shape) => Math.sqrt(Math.max(1, s.area));
 
+// DEDUPE overlapping shapes (the same sticker found by detect + detectWhite, or split
+// fragments). Duplicates crush the nearest-neighbour PITCH estimate (a spurious close
+// pair halves it) and break the grid. Keep the largest of each overlapping cluster.
+export function dedupeShapes(shapes: Shape[]): Shape[] {
+  const sorted = [...shapes].sort((a, b) => b.area - a.area);
+  const keep: Shape[] = [];
+  for (const s of sorted) {
+    const r = 0.55 * side(s);
+    if (!keep.some((k) => Math.hypot(k.center.x - s.center.x, k.center.y - s.center.y) < r)) keep.push(s);
+  }
+  return keep;
+}
+
 // A shape's own quad orientation, folded to [0, π/2). Stickers on ONE face share it;
 // across a cube edge (fold) it jumps — so it cuts links that bridge two faces.
 const shapeAngle = (s: Shape): number => {
@@ -160,7 +173,7 @@ export function detectCubeFaces(shapes: Shape[], opts: FaceOpts = {}): DetectedF
     const colour = mem ? mem.classify(rgb) : classifyColour(rgb);
     return { rgb, colour, black };
   };
-  const { faces } = graphFaces(shapes, oriTol);
+  const { faces } = graphFaces(dedupeShapes(shapes), oriTol);
   const out: DetectedFace[] = [];
   for (const face of faces) {
     if (face.nodes.length < minDetected) continue;

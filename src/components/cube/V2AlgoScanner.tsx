@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { colourHex, ColourMemory, darkFraction } from "@/lib/ml/stickerColor";
-import { graphFaces, detectCubeFaces } from "@/lib/ml/shapeGraph";
+import { graphFaces, detectCubeFaces, dedupeShapes } from "@/lib/ml/shapeGraph";
 import { FaceTracker } from "@/lib/ml/faceTrack";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -66,7 +66,9 @@ export default function V2AlgoScanner() {
     // black is a gap/shadow, never a facelet. Nothing black survives to the graph.
     const notBlack = (s: { corners: { x: number; y: number }[] }) => darkFraction(s.corners, image.data, W, H) <= 0.2;
     shapes = shapes.filter(notBlack); whites = whites.filter(notBlack);
-    const all = [...shapes, ...whites];
+    // DEDUPE overlapping shapes (detect/detectWhite/split overlap) so the pitch estimate
+    // and grid stay correct.
+    const all = dedupeShapes([...shapes, ...whites]);
 
     // ---- graph links (raw structure) ----
     if (o.showLinks) {
