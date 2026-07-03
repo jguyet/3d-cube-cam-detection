@@ -6,6 +6,9 @@ import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { colourHex, ColourMemory, darkFraction } from "@/lib/ml/stickerColor";
 import { graphFaces, detectCubeFaces, dedupeShapes, keepDominantCluster } from "@/lib/ml/shapeGraph";
 import { FaceTracker } from "@/lib/ml/faceTrack";
+import { CubeSim } from "@/lib/ml/cubeSim";
+import { orientationFromFace } from "@/lib/ml/facePose";
+import type { CubeColour } from "@/lib/ml/stickerColor";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
@@ -22,6 +25,8 @@ export default function V2AlgoScanner() {
   const detRef = useRef<ShapeDetector | null>(null);
   const memRef = useRef<ColourMemory | null>(null);
   const trackRef = useRef<FaceTracker | null>(null);
+  const cubeCanvasRef = useRef<HTMLCanvasElement>(null);
+  const simRef = useRef<CubeSim | null>(null);
   const activeRef = useRef(false);      // presence hysteresis state
   const presMissRef = useRef(0);
   const rafRef = useRef(0);
@@ -105,6 +110,20 @@ export default function V2AlgoScanner() {
         ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26); ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText("aucun cube", 12, 24); return; }
     } else presMissRef.current = 0;
 
+    // ---- feed the 3D SIM: colour each scanned face (indexed by centre) + gyroscope ----
+    const sim = simRef.current;
+    if (sim && faces.length) {
+      const cell = (f: typeof faces[0], gx: number, gy: number) => f.cells.find((c) => c.gx === gx && c.gy === gy);
+      for (const f of faces) {
+        const m = cell(f, 1, 1); if (!m || !CUBE.has(m.colour)) continue;
+        const cells9: CubeColour[] = [];
+        for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 3; gx++) cells9.push((cell(f, gx, gy)?.colour ?? "unknown") as CubeColour);
+        sim.setFace(m.colour as CubeColour, cells9);
+      }
+      const d = faces[0], a = cell(d, 0, 0), b = cell(d, 2, 0), c = cell(d, 0, 2);
+      if (a && b && c) sim.setOrientation(orientationFromFace(a.center, b.center, c.center));
+    }
+
     // TEMPORAL STABILISATION of the dominant face (anti-shift): feed it to the tracker
     // and draw the smoothed, colour-voted, label-stable slots instead of the raw cells.
     const centres: { colour: string; frame: string }[] = [];   // each face's CENTRE cell colour
@@ -162,6 +181,7 @@ export default function V2AlgoScanner() {
       detRef.current = new ShapeDetector();
       memRef.current = new ColourMemory(); memRef.current.load(); memRef.current.seedCanonical();
       trackRef.current = new FaceTracker();
+      if (cubeCanvasRef.current) { simRef.current = new CubeSim(cubeCanvasRef.current); simRef.current.resize(cubeCanvasRef.current.clientWidth || 320, cubeCanvasRef.current.clientHeight || 320); }
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
@@ -173,18 +193,24 @@ export default function V2AlgoScanner() {
       setError("Caméra : " + (e instanceof Error ? e.message : String(e)));
     }
   };
-  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); simRef.current?.dispose(); simRef.current = null; cameraRef.current?.stop(); cameraRef.current = null; setStatus("idle"); };
 
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
-      <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black ring-1 ring-white/10">
-        <video ref={videoRef} playsInline muted className="hidden" />
-        <canvas ref={canvasRef} className="h-full w-full object-contain" />
-        {status !== "scanning" && (
-          <div className="absolute inset-0 grid place-items-center text-sm text-white/60">
-            {status === "loading" ? "Chargement…" : "Caméra éteinte"}
-          </div>
-        )}
+      <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
+        <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black ring-1 ring-white/10">
+          <video ref={videoRef} playsInline muted className="hidden" />
+          <canvas ref={canvasRef} className="h-full w-full object-contain" />
+          {status !== "scanning" && (
+            <div className="absolute inset-0 grid place-items-center text-sm text-white/60">
+              {status === "loading" ? "Chargement…" : "Caméra éteinte"}
+            </div>
+          )}
+        </div>
+        <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 ring-1 ring-white/10">
+          <canvas ref={cubeCanvasRef} className="h-full w-full" />
+          <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/40 px-2 py-0.5 text-[11px] font-medium text-white/80">cube 3D — gyroscope</span>
+        </div>
       </div>
       {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 ring-1 ring-red-200 dark:bg-red-950/40 dark:text-red-300">{error}</p>}
       <div className="mt-4 flex flex-wrap items-center gap-4">
