@@ -56,7 +56,14 @@ export class CubeSim {
         this.group.add(m); this.facelets[fi][i + j * 3] = m;
       }
     });
+    this.paintCentres();   // the 6 centres are FIXED and known a priori — show them at once
     this.loop();
+  }
+
+  // face i (by SCHEME) owns this centre colour — the standard scheme, always the same
+  private static CENTRE: CubeColour[] = ["white", "yellow", "green", "blue", "red", "orange"];
+  private paintCentres() {
+    CubeSim.CENTRE.forEach((c, fi) => { this.state[fi][4] = c; (this.facelets[fi][4].material as THREE.MeshStandardMaterial).color.set(colourHex(c)); });
   }
 
   resize(w: number, h: number) { this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
@@ -96,7 +103,7 @@ export class CubeSim {
 
   setOrientation(q: { x: number; y: number; z: number; w: number }) { this.target.set(q.x, q.y, q.z, q.w); }
   scannedCount() { return this.scanned.size; }
-  reset() { this.scanned.clear(); this.state = Array.from({ length: 6 }, () => Array(9).fill(null)); for (const f of this.facelets) for (const m of f) (m.material as THREE.MeshStandardMaterial).color.set(0x2a2f3a); }
+  reset() { this.scanned.clear(); this.state = Array.from({ length: 6 }, () => Array(9).fill(null)); for (const f of this.facelets) for (const m of f) (m.material as THREE.MeshStandardMaterial).color.set(0x2a2f3a); this.paintCentres(); }
 
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);
