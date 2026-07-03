@@ -9,12 +9,40 @@
 
 import type { Point2 } from "../types";
 import { convexHull, minAreaRect, polygonArea, pointInPoly, dist, squareScore } from "../utils/geometry";
+import { classifyColour, type ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 
 export interface Shape {
   corners: Point2[]; // 4 corners, ordered TL,TR,BR,BL
   center: Point2;
   area: number;
   fill: number;      // area / minRect area  (squareness of fill)
+  colour?: CubeColour;                 // set when detect() runs colour-aware
+  rgb?: [number, number, number];      // region mean RGB
+}
+
+// Colour-aware discovery options. When `colour` is on, detect() (1) splits regions at
+// colour boundaries (different facelets that touch with no gap still separate) and
+// (2) tags each shape with its mean colour, REJECTING black regions (a black patch is
+// never a facelet). `mem` classifies against the learned palette when supplied.
+export interface DetectOpts { colour?: boolean; mem?: ColourMemory }
+
+// Fast colour quantiser mirroring classifyColour's buckets — returns a small int label
+// (or -1 unknown) for the colour-boundary edge map. Kept inline to avoid a per-pixel
+// function call + string alloc over the whole frame.
+function quantise(r: number, g: number, b: number): number {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  const s = mx > 0 ? d / mx : 0, v = mx / 255;
+  if (s < 0.16 && v > 0.55) return 0;                  // white
+  if (v < 0.22 && s < 0.5) return 6;                   // dark/black
+  if (s < 0.22) return v > 0.5 ? 0 : -1;               // greyish
+  let h = 0;
+  if (d > 1e-6) { if (mx === r) h = (((g - b) / d) % 6 + 6) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; }
+  if (h < 12 || h >= 345) return 2;                    // red
+  if (h < 42) return 3;                                // orange
+  if (h < 75) return 1;                                // yellow
+  if (h < 170) return 4;                               // green
+  if (h < 265) return 5;                               // blue
+  return 2;                                            // magenta → red
 }
 
 export class ShapeDetector {
@@ -28,9 +56,10 @@ export class ShapeDetector {
   // `region`: when given (e.g. the cube's silhouette hull), shapes are kept only
   // inside it and the standalone background-subtraction is skipped — the region
   // already restricts to the cube zone.
-  detect(img: ImageData, colorThreshold = 160, region?: import("../types").Point2[], adaptive = false): Shape[] {
+  detect(img: ImageData, colorThreshold = 160, region?: import("../types").Point2[], adaptive = false, opts?: DetectOpts): Shape[] {
     const w = img.width, h = img.height, d = img.data;
     const frame = w * h;
+    const colourOn = !!opts?.colour, mem = opts?.mem;
 
     // raw R/G/B (for colour edges) + luma/chroma (for the background model)
     const rA = new Float32Array(frame), gA = new Float32Array(frame), bA = new Float32Array(frame);
@@ -78,6 +107,20 @@ export class ShapeDetector {
       T = Math.max(60, Math.min(colorThreshold, bin / SCALE));   // never above the slider; can go down to catch faint gaps
     }
     for (let i = 0; i < frame; i++) if (mag[i] > T) edges[i] = 1;
+
+    // COLOUR-GUIDED discovery: quantise the (blurred) frame to cube-colour labels and
+    // add an edge wherever the label changes. Two facelets of DIFFERENT colours that
+    // touch with a weak gradient (no black gap) now split — colour drives the search,
+    // not only luminance edges. Same-colour neighbours are untouched (gap handles them).
+    if (colourOn) {
+      const label = new Int16Array(frame).fill(-1);
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) { const i = y * w + x; label[i] = quantise(bR[i], bG[i], bB[i]); }
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x, li = label[i]; if (li < 0) continue;
+        const lr = label[i + 1], lb = label[i + w];
+        if ((lr >= 0 && lr !== li) || (lb >= 0 && lb !== li)) edges[i] = 1;
+      }
+    }
     edges = this.dilate(edges, w, h, 1); // close 1-px gaps so regions are sealed
 
     // regions = non-edge connected components
@@ -90,11 +133,12 @@ export class ShapeDetector {
       if (edges[s0] || vis[s0]) continue;
       vis[s0] = 1; stack.length = 0; stack.push(s0);
       const pts: Point2[] = [];
-      let border = 0;
+      let border = 0, sumR = 0, sumG = 0, sumB = 0;
       while (stack.length) {
         const n = stack.pop()!;
         const nx = n % w, ny = (n / w) | 0;
         pts.push({ x: nx, y: ny });
+        if (colourOn) { sumR += rA[n]; sumG += gA[n]; sumB += bA[n]; }
         if (nx === 0 || ny === 0 || nx === w - 1 || ny === h - 1) border++;
         // 4-connectivity keeps regions separated by 1-px edges
         if (nx + 1 < w) { const m = n + 1; if (!edges[m] && !vis[m]) { vis[m] = 1; stack.push(m); } }
@@ -117,7 +161,15 @@ export class ShapeDetector {
 
       let cx = 0, cy = 0;
       for (const c of rect.corners) { cx += c.x; cy += c.y; }
-      shapes.push({ corners: rect.corners, center: { x: cx / 4, y: cy / 4 }, area, fill });
+      const shape: Shape = { corners: rect.corners, center: { x: cx / 4, y: cy / 4 }, area, fill };
+      if (colourOn) {
+        const rgb: [number, number, number] = [sumR / area, sumG / area, sumB / area];
+        const colour = mem ? mem.classify(rgb) : classifyColour(rgb);
+        if (colour === "dark") continue;   // BLACK region → not a facelet, reject at discovery
+        shape.colour = colour; shape.rgb = rgb;
+        if (mem) mem.learn(rgb);
+      }
+      shapes.push(shape);
     }
 
     // Restrict to the cube zone when a region is given, then keep only the

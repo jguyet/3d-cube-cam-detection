@@ -4,13 +4,19 @@
 // the assignment is stable. Handles any sticker colour pattern (purely geometric).
 
 import type { Shape } from "@/lib/rubik-detector/core/ShapeDetector";
+import { sampleQuadRGB, darkFraction, classifyColour, ColourMemory, type CubeColour } from "@/lib/ml/stickerColor";
 
 export interface GraphNode { shape: Shape; gx: number; gy: number; face: number; deg: number }
 export interface GraphFace { nodes: GraphNode[]; rot: number; pitch: number; w: number; h: number }
 export interface GraphResult { nodes: GraphNode[]; faces: GraphFace[]; edges: [number, number][] }
 
-export interface FaceCell { gx: number; gy: number; center: { x: number; y: number }; corners: { x: number; y: number }[]; detected: boolean; shape?: Shape }
+export interface FaceCell {
+  gx: number; gy: number; center: { x: number; y: number }; corners: { x: number; y: number }[];
+  detected: boolean; shape?: Shape;
+  rgb: [number, number, number] | null; colour: CubeColour; black: boolean;
+}
 export interface DetectedFace { cells: FaceCell[]; rot: number; pitch: number; count: number }
+export interface FaceOpts { image?: ImageData; mem?: ColourMemory; minDetected?: number }
 
 const side = (s: Shape) => Math.sqrt(Math.max(1, s.area));
 
@@ -128,7 +134,22 @@ function fitAffine(pts: { gx: number; gy: number; x: number; y: number }[]): ((g
 // the affine (uniform pitch), pick the 3×3 window covering the most detected cells,
 // and emit all 9 cells (detected ones use their real quad; missing ones are predicted
 // so the face is always complete). minDetected guards against noise components.
-export function detectCubeFaces(shapes: Shape[], minDetected = 4): DetectedFace[] {
+//
+// COLOUR is read here, wired straight into shape discovery: every cell is sampled from
+// the image — even the COMPLETED (predicted) cells get their colour by looking where the
+// sticker should be — classified through the learned palette (ColourMemory, closed-set at
+// 6), and flagged black (a black cell is not a real facelet).
+export function detectCubeFaces(shapes: Shape[], opts: FaceOpts = {}): DetectedFace[] {
+  const { image, mem, minDetected = 4 } = opts;
+  const px = image?.data, iw = image?.width ?? 0, ih = image?.height ?? 0;
+  const readColour = (corners: { x: number; y: number }[]): { rgb: [number, number, number] | null; colour: CubeColour; black: boolean } => {
+    if (!px) return { rgb: null, colour: "unknown", black: false };
+    const black = darkFraction(corners, px, iw, ih) > 0.2;
+    const rgb = sampleQuadRGB(corners, px, iw, ih);
+    if (!rgb) return { rgb: null, colour: "unknown", black };
+    const colour = mem ? mem.classify(rgb) : classifyColour(rgb);
+    return { rgb, colour, black };
+  };
   const { faces } = graphFaces(shapes);
   const out: DetectedFace[] = [];
   for (const face of faces) {
@@ -151,14 +172,21 @@ export function detectCubeFaces(shapes: Shape[], minDetected = 4): DetectedFace[
     for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) {
       const gx = bestOx + dx, gy = bestOy + dy;
       const hit = byCell.get(`${gx},${gy}`);
-      if (hit) { cells.push({ gx: dx, gy: dy, center: hit.shape.center, corners: hit.shape.corners, detected: true, shape: hit.shape }); continue; }
+      if (hit) {
+        // prefer the colour already computed during shape discovery (detect() learned it)
+        const col = hit.shape.colour
+          ? { rgb: (hit.shape.rgb ?? null) as [number, number, number] | null, colour: hit.shape.colour, black: false }
+          : readColour(hit.shape.corners);
+        cells.push({ gx: dx, gy: dy, center: hit.shape.center, corners: hit.shape.corners, detected: true, shape: hit.shape, ...col });
+        continue;
+      }
       const c0 = predict(gx, gy), cX = predict(gx + 1, gy), cY = predict(gx, gy + 1);
       const ux = (cX.x - c0.x) * 0.5, uy = (cX.y - c0.y) * 0.5, vX = (cY.x - c0.x) * 0.5, vY = (cY.y - c0.y) * 0.5;
       const corners = [
         { x: c0.x - ux - vX, y: c0.y - uy - vY }, { x: c0.x + ux - vX, y: c0.y + uy - vY },
         { x: c0.x + ux + vX, y: c0.y + uy + vY }, { x: c0.x - ux + vX, y: c0.y - uy + vY },
       ];
-      cells.push({ gx: dx, gy: dy, center: c0, corners, detected: false });
+      cells.push({ gx: dx, gy: dy, center: c0, corners, detected: false, ...readColour(corners) });
     }
     out.push({ cells, rot: face.rot, pitch: face.pitch, count: bestC });
   }

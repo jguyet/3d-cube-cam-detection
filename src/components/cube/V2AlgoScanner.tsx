@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
-import { sampleQuadRGB, classifyColour, colourHex } from "@/lib/ml/stickerColor";
+import { colourHex, ColourMemory } from "@/lib/ml/stickerColor";
 import { graphFaces, detectCubeFaces } from "@/lib/ml/shapeGraph";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -19,6 +19,7 @@ export default function V2AlgoScanner() {
   const cameraRef = useRef<CameraStream | null>(null);
   const grabberRef = useRef<FrameGrabber | null>(null);
   const detRef = useRef<ShapeDetector | null>(null);
+  const memRef = useRef<ColourMemory | null>(null);
   const rafRef = useRef(0);
 
   const [status, setStatus] = useState<Status>("idle");
@@ -50,8 +51,11 @@ export default function V2AlgoScanner() {
     ctx.putImageData(image, 0, 0);
     const o = r.current;
 
+    const mem = memRef.current!;
     const region = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
-    let shapes = det.detect(image, o.thr, region, o.adaptive);
+    // COLOUR-AWARE discovery: colour boundaries split touching facelets, each shape is
+    // tagged with its colour, black regions are rejected at the source.
+    let shapes = det.detect(image, o.thr, region, o.adaptive, { colour: true, mem });
     let whites = o.showWhite ? det.detectWhite(image, region, false) : [];
     if (o.splitBlocks) { shapes = det.splitMerged(shapes, image); whites = det.splitMerged(whites, image); }
     const all = [...shapes, ...whites];
@@ -67,14 +71,13 @@ export default function V2AlgoScanner() {
     }
 
     // ---- DETECT FACES: each face is a full 3×3 (9 cells), detected + completed ----
-    const faces = detectCubeFaces(all);
+    const faces = detectCubeFaces(all, { image, mem });
     let fi = 0;
     for (const face of faces) {
       const col = FACE_COL[fi % FACE_COL.length]; fi++;
       for (const cell of face.cells) {
         if (!cell.detected && !o.imagine) continue;
-        const rgb = sampleQuadRGB(cell.corners, image.data, W, H);
-        const fillCol = rgb ? colourHex(classifyColour(rgb)) : undefined;
+        const fillCol = cell.colour !== "unknown" ? colourHex(cell.colour) : undefined;
         ctx.beginPath(); cell.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath();
         if (fillCol) { ctx.fillStyle = fillCol; ctx.globalAlpha = cell.detected ? 0.5 : 0.28; ctx.fill(); ctx.globalAlpha = 1; }
         // detected cells: solid thick outline; completed cells: dashed
@@ -105,6 +108,7 @@ export default function V2AlgoScanner() {
     setError(null); setStatus("loading");
     try {
       detRef.current = new ShapeDetector();
+      memRef.current = new ColourMemory(); memRef.current.load();
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
@@ -116,7 +120,7 @@ export default function V2AlgoScanner() {
       setError("Caméra : " + (e instanceof Error ? e.message : String(e)));
     }
   };
-  const stop = () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); cameraRef.current = null; setStatus("idle"); };
+  const stop = () => { cancelAnimationFrame(rafRef.current); memRef.current?.save(); cameraRef.current?.stop(); cameraRef.current = null; setStatus("idle"); };
 
   return (
     <div className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
