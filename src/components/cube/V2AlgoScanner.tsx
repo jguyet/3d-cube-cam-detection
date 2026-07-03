@@ -7,7 +7,7 @@ import { colourHex, ColourMemory, darkFraction } from "@/lib/ml/stickerColor";
 import { graphFaces, detectCubeFaces, dedupeShapes, keepDominantCluster } from "@/lib/ml/shapeGraph";
 import { FaceTracker } from "@/lib/ml/faceTrack";
 import { CubeSim } from "@/lib/ml/cubeSim";
-import { orientationFromFace } from "@/lib/ml/facePose";
+import { cubeOrientation, type FaceObs } from "@/lib/ml/facePose";
 import type { CubeColour } from "@/lib/ml/stickerColor";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -114,14 +114,21 @@ export default function V2AlgoScanner() {
     const sim = simRef.current;
     if (sim && faces.length) {
       const cell = (f: typeof faces[0], gx: number, gy: number) => f.cells.find((c) => c.gx === gx && c.gy === gy);
+      // GYROSCOPE from ALL visible faces — each face's CENTRE colour anchors its absolute
+      // cube-space frame, so seeing two faces mid-rotation over-determines (not confuses)
+      // the orientation. Weight each by its detected-cell count so the 50/50 transition
+      // blends smoothly between the two known faces.
+      const obs: FaceObs[] = [];
       for (const f of faces) {
         const m = cell(f, 1, 1); if (!m || !CUBE.has(m.colour)) continue;
         const cells9: CubeColour[] = [];
         for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 3; gx++) cells9.push((cell(f, gx, gy)?.colour ?? "unknown") as CubeColour);
         sim.setFace(m.colour as CubeColour, cells9);
+        const a = cell(f, 0, 0), b = cell(f, 2, 0), c = cell(f, 0, 2);
+        if (a && b && c) obs.push({ colour: m.colour, c00: a.center, c20: b.center, c02: c.center, weight: f.count });
       }
-      const d = faces[0], a = cell(d, 0, 0), b = cell(d, 2, 0), c = cell(d, 0, 2);
-      if (a && b && c) sim.setOrientation(orientationFromFace(a.center, b.center, c.center));
+      const q = cubeOrientation(obs);
+      if (q) sim.setOrientation(q);
     }
 
     // TEMPORAL STABILISATION of the dominant face (anti-shift): feed it to the tracker
