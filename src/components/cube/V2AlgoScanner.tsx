@@ -33,6 +33,8 @@ export default function V2AlgoScanner() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [cubeInfo, setCubeInfo] = useState<{ pct: number; status: "valid" | "invalid" | "partial"; msg: string }>({ pct: 0, status: "partial", msg: "" });
+  const frameRef = useRef(0);
 
   const [thr, setThr] = useState(72);
   const [adaptive, setAdaptive] = useState(true);
@@ -129,6 +131,8 @@ export default function V2AlgoScanner() {
       }
       const q = cubeOrientation(obs);
       if (q) sim.setOrientation(q);
+      // completion % + Rubik-law validity (throttled to avoid re-render churn)
+      if ((frameRef.current++ & 7) === 0) { const v = sim.validity(); setCubeInfo({ pct: Math.round(sim.completion() * 100), status: v.status, msg: v.msg }); }
     }
 
     // TEMPORAL STABILISATION of the dominant face (anti-shift): feed it to the tracker
@@ -214,9 +218,23 @@ export default function V2AlgoScanner() {
             </div>
           )}
         </div>
-        <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 ring-1 ring-white/10">
-          <canvas ref={cubeCanvasRef} className="h-full w-full" />
-          <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/40 px-2 py-0.5 text-[11px] font-medium text-white/80">cube 3D — gyroscope</span>
+        <div className="flex flex-col gap-2">
+          <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 ring-1 ring-white/10">
+            <canvas ref={cubeCanvasRef} className="h-full w-full" />
+            <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/40 px-2 py-0.5 text-[11px] font-medium text-white/80">cube 3D — gyroscope</span>
+          </div>
+          <div className="rounded-lg bg-slate-100 p-2.5 dark:bg-slate-800">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-300">
+              <span>complétion</span><span className="font-mono">{cubeInfo.pct}%</span>
+            </div>
+            <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-300 dark:bg-slate-700">
+              <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${cubeInfo.pct}%` }} />
+            </div>
+            <div className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${cubeInfo.status === "invalid" ? "text-red-600 dark:text-red-400" : cubeInfo.status === "valid" ? "text-emerald-600 dark:text-emerald-400" : "text-slate-500 dark:text-slate-400"}`}>
+              <span>{cubeInfo.status === "invalid" ? "✗" : cubeInfo.status === "valid" ? "✓" : "…"}</span>
+              <span>lois Rubik : {cubeInfo.status === "invalid" ? cubeInfo.msg : cubeInfo.status === "valid" ? "valide" : `en cours — ${cubeInfo.msg}`}</span>
+            </div>
+          </div>
         </div>
       </div>
       {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 ring-1 ring-red-200 dark:bg-red-950/40 dark:text-red-300">{error}</p>}
