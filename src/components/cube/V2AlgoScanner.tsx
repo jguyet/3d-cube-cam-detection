@@ -5,6 +5,7 @@ import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
 import { colourHex, ColourMemory } from "@/lib/ml/stickerColor";
 import { graphFaces, detectCubeFaces } from "@/lib/ml/shapeGraph";
+import { FaceTracker } from "@/lib/ml/faceTrack";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
@@ -20,6 +21,7 @@ export default function V2AlgoScanner() {
   const grabberRef = useRef<FrameGrabber | null>(null);
   const detRef = useRef<ShapeDetector | null>(null);
   const memRef = useRef<ColourMemory | null>(null);
+  const trackRef = useRef<FaceTracker | null>(null);
   const rafRef = useRef(0);
 
   const [status, setStatus] = useState<Status>("idle");
@@ -31,9 +33,10 @@ export default function V2AlgoScanner() {
   const [splitBlocks, setSplitBlocks] = useState(true);
   const [imagine, setImagine] = useState(true);
   const [showLinks, setShowLinks] = useState(true);
+  const [stabilise, setStabilise] = useState(true);
   const [res, setRes] = useState(560);
-  const r = useRef({ thr, adaptive, showWhite, splitBlocks, imagine, showLinks });
-  r.current = { thr, adaptive, showWhite, splitBlocks, imagine, showLinks };
+  const r = useRef({ thr, adaptive, showWhite, splitBlocks, imagine, showLinks, stabilise });
+  r.current = { thr, adaptive, showWhite, splitBlocks, imagine, showLinks, stabilise };
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -72,26 +75,30 @@ export default function V2AlgoScanner() {
 
     // ---- DETECT FACES: each face is a full 3×3 (9 cells), detected + completed ----
     const faces = detectCubeFaces(all, { image, mem });
-    let fi = 0;
-    for (const face of faces) {
-      const col = FACE_COL[fi % FACE_COL.length]; fi++;
-      for (const cell of face.cells) {
-        if (!cell.detected && !o.imagine) continue;
-        const fillCol = cell.colour !== "unknown" ? colourHex(cell.colour) : undefined;
-        ctx.beginPath(); cell.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath();
-        if (fillCol) { ctx.fillStyle = fillCol; ctx.globalAlpha = cell.detected ? 0.5 : 0.28; ctx.fill(); ctx.globalAlpha = 1; }
-        // detected cells: solid thick outline; completed cells: dashed
-        if (cell.detected) { ctx.setLineDash([]); ctx.lineWidth = 3; }
-        else { ctx.setLineDash([5, 4]); ctx.lineWidth = 1.6; }
-        ctx.strokeStyle = col; ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = "#fff"; ctx.font = "bold 11px monospace";
-        ctx.fillText(`${cell.gx}${cell.gy}`, cell.center.x - 6, cell.center.y + 4);
-      }
-      // face frame: outer hull of the 3×3 (corners of cells 00,20,22,02)
-      const corner = (gx: number, gy: number) => face.cells.find((c) => c.gx === gx && c.gy === gy)!.center;
-      ctx.setLineDash([]); ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.globalAlpha = 0.9;
-      const c0 = corner(0, 0), lbl = corner(0, 2), tr = corner(2, 0), br = corner(2, 2);
-      ctx.beginPath(); ctx.moveTo(c0.x, c0.y); ctx.lineTo(tr.x, tr.y); ctx.lineTo(br.x, br.y); ctx.lineTo(lbl.x, lbl.y); ctx.closePath(); ctx.stroke(); ctx.globalAlpha = 1;
+
+    // TEMPORAL STABILISATION of the dominant face (anti-shift): feed it to the tracker
+    // and draw the smoothed, colour-voted, label-stable slots instead of the raw cells.
+    const drawCell = (corners: { x: number; y: number }[], center: { x: number; y: number }, colour: string, detected: boolean, label: string, col: string) => {
+      if (!detected && !o.imagine) return;
+      const fillCol = colour !== "unknown" ? colourHex(colour as never) : undefined;
+      ctx.beginPath(); corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath();
+      if (fillCol) { ctx.fillStyle = fillCol; ctx.globalAlpha = detected ? 0.5 : 0.28; ctx.fill(); ctx.globalAlpha = 1; }
+      if (detected) { ctx.setLineDash([]); ctx.lineWidth = 3; } else { ctx.setLineDash([5, 4]); ctx.lineWidth = 1.6; }
+      ctx.strokeStyle = col; ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = "#fff"; ctx.font = "bold 11px monospace"; ctx.fillText(label, center.x - 6, center.y + 4);
+    };
+
+    if (o.stabilise) {
+      const slots = trackRef.current!.update(faces[0] ?? null);
+      const col = FACE_COL[0];
+      for (const s of slots) drawCell(s.corners, { x: s.cx, y: s.cy }, trackRef.current!.colourOf(s), s.detected, `${s.gx}${s.gy}`, col);
+      // draw any secondary faces raw (rare) so multi-face still shows
+      let fi = 1;
+      for (const face of faces.slice(1)) { const c = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, c); }
+    } else {
+      trackRef.current!.reset();
+      let fi = 0;
+      for (const face of faces) { const col = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, col); }
     }
 
     // centre dots
@@ -109,6 +116,7 @@ export default function V2AlgoScanner() {
     try {
       detRef.current = new ShapeDetector();
       memRef.current = new ColourMemory(); memRef.current.load(); memRef.current.seedCanonical();
+      trackRef.current = new FaceTracker();
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
@@ -152,6 +160,7 @@ export default function V2AlgoScanner() {
         </label>
         <label className="flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400"><input type="checkbox" checked={splitBlocks} onChange={(e) => setSplitBlocks(e.target.checked)} /> découper blocs</label>
         <label className="flex items-center gap-2 text-sm font-medium text-fuchsia-600 dark:text-fuchsia-400"><input type="checkbox" checked={imagine} onChange={(e) => setImagine(e.target.checked)} /> imaginer face complète</label>
+        <label className="flex items-center gap-2 text-sm font-medium text-emerald-600 dark:text-emerald-400"><input type="checkbox" checked={stabilise} onChange={(e) => setStabilise(e.target.checked)} /> stabiliser (anti-shift)</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400"><input type="checkbox" checked={showLinks} onChange={(e) => setShowLinks(e.target.checked)} /> liens</label>
         <label className="flex items-center gap-2 text-sm text-cyan-600 dark:text-cyan-400"><input type="checkbox" checked={showWhite} onChange={(e) => setShowWhite(e.target.checked)} /> blanc</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
