@@ -113,32 +113,43 @@ export default function V2AlgoScanner() {
         ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26); ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText("aucun cube", 12, 24); return; }
     } else presMissRef.current = 0;
 
-    // ---- feed the 3D SIM: colour each scanned face (indexed by centre) + gyroscope ----
+    const cell = (f: typeof faces[0], gx: number, gy: number) => f.cells.find((c) => c.gx === gx && c.gy === gy);
+    // Tracker FIRST so both the drawing AND the gyroscope use the anti-teleport-protected
+    // dominant face (a far single-frame jump is rejected, not snapped to).
+    const slots = o.stabilise ? trackRef.current!.update(faces[0] ?? null) : (trackRef.current!.reset(), null);
+    const track = trackRef.current!;
+
+    // ---- feed the 3D SIM: colours (per face) + gyroscope (protected dominant + others) ----
     const sim = simRef.current;
     if (sim && faces.length) {
-      const cell = (f: typeof faces[0], gx: number, gy: number) => f.cells.find((c) => c.gx === gx && c.gy === gy);
-      // GYROSCOPE from ALL visible faces — each face's CENTRE colour anchors its absolute
-      // cube-space frame, so seeing two faces mid-rotation over-determines (not confuses)
-      // the orientation. Weight each by its detected-cell count so the 50/50 transition
-      // blends smoothly between the two known faces.
-      const obs: FaceObs[] = [];
       for (const f of faces) {
         const m = cell(f, 1, 1); if (!m || !CUBE.has(m.colour)) continue;
         const cells9: CubeColour[] = [];
         for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 3; gx++) cells9.push((cell(f, gx, gy)?.colour ?? "unknown") as CubeColour);
         sim.setFace(m.colour as CubeColour, cells9);
-        const a = cell(f, 0, 0), b = cell(f, 2, 0), c = cell(f, 0, 2);
-        if (a && b && c) obs.push({ colour: m.colour, c00: a.center, c20: b.center, c02: c.center, weight: f.count });
+      }
+      const obs: FaceObs[] = [];
+      // dominant face orientation from the PROTECTED slots (no teleport)
+      if (slots && slots.length) {
+        const sc = (gx: number, gy: number) => slots.find((s) => s.gx === gx && s.gy === gy);
+        const s11 = sc(1, 1), s00 = sc(0, 0), s20 = sc(2, 0), s02 = sc(0, 2);
+        if (s11 && s00 && s20 && s02 && CUBE.has(track.colourOf(s11)))
+          obs.push({ colour: track.colourOf(s11), c00: { x: s00.cx, y: s00.cy }, c20: { x: s20.cx, y: s20.cy }, c02: { x: s02.cx, y: s02.cy }, weight: slots.filter((s) => s.detected).length });
+      } else {
+        const d = faces[0], m = cell(d, 1, 1), a = cell(d, 0, 0), b = cell(d, 2, 0), c = cell(d, 0, 2);
+        if (m && a && b && c && CUBE.has(m.colour)) obs.push({ colour: m.colour, c00: a.center, c20: b.center, c02: c.center, weight: d.count });
+      }
+      for (const f of faces.slice(1)) {   // secondary faces still contribute (transition)
+        const m = cell(f, 1, 1), a = cell(f, 0, 0), b = cell(f, 2, 0), c = cell(f, 0, 2);
+        if (m && a && b && c && CUBE.has(m.colour)) obs.push({ colour: m.colour, c00: a.center, c20: b.center, c02: c.center, weight: f.count });
       }
       const q = cubeOrientation(obs);
       if (q) sim.setOrientation(q);
-      // completion % + Rubik-law validity (throttled to avoid re-render churn)
       if ((frameRef.current++ & 7) === 0) { const v = sim.validity(); setCubeInfo({ pct: Math.round(sim.completion() * 100), status: v.status, msg: v.msg }); }
     }
 
-    // TEMPORAL STABILISATION of the dominant face (anti-shift): feed it to the tracker
-    // and draw the smoothed, colour-voted, label-stable slots instead of the raw cells.
-    const centres: { colour: string; frame: string }[] = [];   // each face's CENTRE cell colour
+    // ---- draw ----
+    const centres: { colour: string; frame: string }[] = [];
     const drawCell = (corners: { x: number; y: number }[], center: { x: number; y: number }, colour: string, detected: boolean, label: string, col: string) => {
       if (!detected && !o.imagine) return;
       const fillCol = colour !== "unknown" ? colourHex(colour as never) : undefined;
@@ -149,19 +160,16 @@ export default function V2AlgoScanner() {
       ctx.fillStyle = "#fff"; ctx.font = "bold 11px monospace"; ctx.fillText(label, center.x - 6, center.y + 4);
     };
 
-    if (o.stabilise) {
-      const slots = trackRef.current!.update(faces[0] ?? null);
+    if (slots) {
       const col = FACE_COL[0];
-      for (const s of slots) drawCell(s.corners, { x: s.cx, y: s.cy }, trackRef.current!.colourOf(s), s.detected, `${s.gx}${s.gy}`, col);
+      for (const s of slots) drawCell(s.corners, { x: s.cx, y: s.cy }, track.colourOf(s), s.detected, `${s.gx}${s.gy}`, col);
       const mid = slots.find((s) => s.gx === 1 && s.gy === 1);
-      if (mid) centres.push({ colour: trackRef.current!.colourOf(mid), frame: col });
-      // draw any secondary faces raw (rare) so multi-face still shows
+      if (mid) centres.push({ colour: track.colourOf(mid), frame: col });
       let fi = 1;
-      for (const face of faces.slice(1)) { const c = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, c); const m = face.cells.find((cl) => cl.gx === 1 && cl.gy === 1); if (m) centres.push({ colour: m.colour, frame: c }); }
+      for (const face of faces.slice(1)) { const c = FACE_COL[fi++ % FACE_COL.length]; for (const cl of face.cells) drawCell(cl.corners, cl.center, cl.colour, cl.detected, `${cl.gx}${cl.gy}`, c); const m = cell(face, 1, 1); if (m) centres.push({ colour: m.colour, frame: c }); }
     } else {
-      trackRef.current!.reset();
       let fi = 0;
-      for (const face of faces) { const col = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, col); const m = face.cells.find((cl) => cl.gx === 1 && cl.gy === 1); if (m) centres.push({ colour: m.colour, frame: col }); }
+      for (const face of faces) { const col = FACE_COL[fi++ % FACE_COL.length]; for (const cl of face.cells) drawCell(cl.corners, cl.center, cl.colour, cl.detected, `${cl.gx}${cl.gy}`, col); const m = cell(face, 1, 1); if (m) centres.push({ colour: m.colour, frame: col }); }
     }
 
     // ---- CENTRE-CELL ZONE: the fixed centre sticker of each face (its identity) ----
