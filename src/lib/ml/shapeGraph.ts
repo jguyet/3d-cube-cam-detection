@@ -98,17 +98,30 @@ export function graphFaces(shapes: Shape[], oriTol = 0.18): GraphResult {
 
     // grid rotation from the component's edge directions (doubled-angle averaging so
     // the two perpendicular axes reinforce instead of cancel: 4·θ folds mod 90).
-    let sC = 0, sS = 0, lens: number[] = [];
+    let sC = 0, sS = 0; const evecs: [number, number][] = [];
     for (const [i, j] of edges) {
       if (comp[i] !== f) continue;
       const dx = c[j].x - c[i].x, dy = c[j].y - c[i].y, a = Math.atan2(dy, dx);
-      sC += Math.cos(4 * a); sS += Math.sin(4 * a); lens.push(Math.hypot(dx, dy));
+      sC += Math.cos(4 * a); sS += Math.sin(4 * a); evecs.push([dx, dy]);
     }
     const rot = Math.atan2(sS, sC) / 4;
-    lens.sort((a, b) => a - b); const pitch = lens[lens.length >> 1] || pitch0;
     const ux = Math.cos(rot), uy = Math.sin(rot), vx = -Math.sin(rot), vy = Math.cos(rot);
 
-    // BFS grid assignment: each edge is projected onto (u,v) → an integer step.
+    // ANISOTROPIC pitch — a foreshortened (oblique) face is a RECTANGULAR grid in the
+    // image: the step along one axis is much shorter than the other. Estimate pitch_u and
+    // pitch_v separately by classifying each ortho edge as a u- or v-step, so the BFS grid
+    // gate holds on BOTH axes (a single isotropic pitch was silently killing oblique faces).
+    const lensU: number[] = [], lensV: number[] = [];
+    for (const [dx, dy] of evecs) {
+      const pu = Math.abs(dx * ux + dy * uy), pv = Math.abs(dx * vx + dy * vy);
+      if (pu >= pv) lensU.push(pu); else lensV.push(pv);
+    }
+    const medOf = (a: number[]) => { if (!a.length) return 0; a.sort((x, y) => x - y); return a[a.length >> 1]; };
+    const pitchU = medOf(lensU) || medOf(lensV) || pitch0;
+    const pitchV = medOf(lensV) || medOf(lensU) || pitch0;
+    const pitch = Math.sqrt(pitchU * pitchV);
+
+    // BFS grid assignment: each edge is projected onto (u,v) with its own axis pitch.
     const seed = idxs.reduce((best, k) => (nodes[k].deg > nodes[best].deg ? k : best), idxs[0]);
     nodes[seed].gx = 0; nodes[seed].gy = 0; nodes[seed].face = f;
     const seen = new Set<number>([seed]); const q = [seed];
@@ -117,7 +130,7 @@ export function graphFaces(shapes: Shape[], oriTol = 0.18): GraphResult {
       for (const m of adj[n]) {
         if (seen.has(m)) continue;
         const dx = c[m].x - c[n].x, dy = c[m].y - c[n].y;
-        const du = (dx * ux + dy * uy) / pitch, dv = (dx * vx + dy * vy) / pitch;
+        const du = (dx * ux + dy * uy) / pitchU, dv = (dx * vx + dy * vy) / pitchV;
         const sgx = Math.round(du), sgy = Math.round(dv);
         if (Math.abs(du - sgx) > 0.34 || Math.abs(dv - sgy) > 0.34) continue;   // not a clean grid step
         if (sgx === 0 && sgy === 0) continue;
