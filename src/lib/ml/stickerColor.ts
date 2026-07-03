@@ -46,8 +46,11 @@ export function darkFraction(q: readonly Pt[], data: Uint8ClampedArray, W: numbe
     const x = Math.round((1 - u) * (1 - v) * A.x + u * (1 - v) * B.x + u * v * C.x + (1 - u) * v * D.x);
     const y = Math.round((1 - u) * (1 - v) * A.y + u * (1 - v) * B.y + u * v * C.y + (1 - u) * v * D.y);
     if (x < 0 || y < 0 || x >= W || y >= H) continue;
-    const i = (y * W + x) * 4;
-    if (Math.max(data[i], data[i + 1], data[i + 2]) < 55) dark++;
+    const i = (y * W + x) * 4, mx = Math.max(data[i], data[i + 1], data[i + 2]), mn = Math.min(data[i], data[i + 1], data[i + 2]);
+    const sat = mx > 0 ? (mx - mn) / mx : 0;
+    // BLACK = dark AND achromatic (the plastic gap R≈G≈B). A dark-but-SATURATED
+    // pixel is a dark red/blue/green facelet, NOT black — never count it as black.
+    if (mx < 60 && sat < 0.45) dark++;
     n++;
   }
   return n > 0 ? dark / n : 0;
@@ -72,10 +75,12 @@ function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
 export function classifyColour(rgb: [number, number, number]): CubeColour {
   const [h, s, v] = rgbToHsv(rgb[0], rgb[1], rgb[2]);   // v already in 0..1
   if (s < 0.16 && v > 0.55) return "white";
-  // very dark = black / dark-brown → hair or deep shadow, never a lit sticker
-  if (v < 0.25) return "dark";
-  // dark-brown hair that isn't quite black: warm, low-ish sat, still fairly dark
-  if (h >= 6 && h <= 45 && s <= 0.55 && v < 0.42) return "dark";
+  // "dark" = black / gap / shadow → only when ACHROMATIC (low saturation). A dark
+  // but SATURATED pixel is a dark red/blue/green facelet → classify it by hue, not
+  // dark (this was rejecting dark blue/red stickers).
+  if (v < 0.22 && s < 0.5) return "dark";
+  // dark-brown hair: warm, low sat, fairly dark (still needs low-ish saturation)
+  if (h >= 6 && h <= 45 && s <= 0.45 && v < 0.42) return "dark";
   // skin / beige: warm hue, not-too-saturated, mid→bright
   if (h >= 6 && h <= 50 && s >= 0.15 && s <= 0.62 && v >= 0.25 && v <= 0.93) return "skin";
   if (s < 0.22) return v > 0.5 ? "white" : "unknown";   // greyish, not a vivid sticker
