@@ -21,13 +21,14 @@ export default function ShapeDebugScanner() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const [thr, setThr] = useState(125);
+  const [thr, setThr] = useState(160);
+  const [adaptive, setAdaptive] = useState(true);
   const [showWhite, setShowWhite] = useState(true);
   const [showEdges, setShowEdges] = useState(false);
   const [showColour, setShowColour] = useState(true);
   const [res, setRes] = useState(560);
-  const r = useRef({ thr, showWhite, showEdges, showColour });
-  r.current = { thr, showWhite, showEdges, showColour };
+  const r = useRef({ thr, adaptive, showWhite, showEdges, showColour });
+  r.current = { thr, adaptive, showWhite, showEdges, showColour };
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -44,8 +45,10 @@ export default function ShapeDebugScanner() {
     const o = r.current;
 
     // edge map underlay
+    let effT = o.thr;
     if (o.showEdges) {
-      const { edges } = det.debugEdges(image, o.thr);
+      const { edges, T } = det.debugEdges(image, o.thr, o.adaptive);
+      effT = T;
       const ov = ctx.getImageData(0, 0, W, H);
       for (let i = 0; i < edges.length; i++) if (edges[i]) { const p = i * 4; ov.data[p] = 255; ov.data[p + 1] = 0; ov.data[p + 2] = 255; }
       ctx.putImageData(ov, 0, 0);
@@ -53,7 +56,7 @@ export default function ShapeDebugScanner() {
 
     // detect() quads (region = whole frame so nothing is zone-gated)
     const region = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
-    const shapes = det.detect(image, o.thr, region);
+    const shapes = det.detect(image, o.thr, region, o.adaptive);
     const whites = o.showWhite ? det.detectWhite(image, region, false) : [];
 
     const drawQuad = (corners: { x: number; y: number }[], stroke: string, fillCol?: string) => {
@@ -71,9 +74,9 @@ export default function ShapeDebugScanner() {
     }
     for (const s of whites) drawQuad(s.corners, "rgba(0,224,255,0.95)");
 
-    ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 250, 26);
+    ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 300, 26);
     ctx.fillStyle = "#a7f3d0"; ctx.font = "14px monospace";
-    ctx.fillText(`edge:${shapes.length}  white:${whites.length}  thr:${o.thr}`, 12, 24);
+    ctx.fillText(`edge:${shapes.length}  white:${whites.length}  seuil:${o.adaptive ? `~${effT}(auto,max${o.thr})` : o.thr}`, 12, 24);
   };
 
   const start = async () => {
@@ -113,9 +116,12 @@ export default function ShapeDebugScanner() {
         ) : (
           <button onClick={stop} className="rounded-xl bg-slate-200 px-5 py-3 font-semibold text-slate-700 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100">Arrêter</button>
         )}
+        <label className="flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400">
+          <input type="checkbox" checked={adaptive} onChange={(e) => setAdaptive(e.target.checked)} /> seuil adaptatif
+        </label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-          seuil arête
-          <input type="range" min={40} max={300} step={5} value={thr} onChange={(e) => setThr(+e.target.value)} />
+          {adaptive ? "seuil max" : "seuil arête"}
+          <input type="range" min={40} max={400} step={5} value={thr} onChange={(e) => setThr(+e.target.value)} />
           <span className="w-8 font-mono">{thr}</span>
         </label>
         <label className="flex items-center gap-2 text-sm text-cyan-600 dark:text-cyan-400"><input type="checkbox" checked={showWhite} onChange={(e) => setShowWhite(e.target.checked)} /> détection blanc</label>

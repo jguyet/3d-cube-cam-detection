@@ -28,7 +28,7 @@ export class ShapeDetector {
   // `region`: when given (e.g. the cube's silhouette hull), shapes are kept only
   // inside it and the standalone background-subtraction is skipped — the region
   // already restricts to the cube zone.
-  detect(img: ImageData, colorThreshold = 160, region?: import("../types").Point2[]): Shape[] {
+  detect(img: ImageData, colorThreshold = 160, region?: import("../types").Point2[], adaptive = false): Shape[] {
     const w = img.width, h = img.height, d = img.data;
     const frame = w * h;
 
@@ -51,6 +51,9 @@ export class ShapeDetector {
     // clear a high bar. Lighting/shadow gradients within a sticker are a small
     // colour change and produce no edge — so a region = one flat-colour patch.
     let edges: Uint8Array = new Uint8Array(frame);
+    const mag = new Float32Array(frame);
+    const BINS = 256, SCALE = BINS / 1800;   // RGB Sobel mag ranges ~0..1800
+    const hist = new Int32Array(BINS); let inRegion = 0;
     for (let y = 1; y < h - 1; y++)
       for (let x = 1; x < w - 1; x++) {
         const i = y * w + x;
@@ -60,9 +63,21 @@ export class ShapeDetector {
         const gyG = (bG[i + w - 1] + 2 * bG[i + w] + bG[i + w + 1]) - (bG[i - w - 1] + 2 * bG[i - w] + bG[i - w + 1]);
         const gxB = (bB[i - w + 1] + 2 * bB[i + 1] + bB[i + w + 1]) - (bB[i - w - 1] + 2 * bB[i - 1] + bB[i + w - 1]);
         const gyB = (bB[i + w - 1] + 2 * bB[i + w] + bB[i + w + 1]) - (bB[i - w - 1] + 2 * bB[i - w] + bB[i - w + 1]);
-        const mag = Math.sqrt(gxR * gxR + gyR * gyR + gxG * gxG + gyG * gyG + gxB * gxB + gyB * gyB);
-        if (mag > colorThreshold) edges[i] = 1;
+        const m = Math.sqrt(gxR * gxR + gyR * gyR + gxG * gxG + gyG * gyG + gxB * gxB + gyB * gyB);
+        mag[i] = m;
+        if (adaptive && (!region || pointInPoly({ x, y }, region))) { hist[Math.min(BINS - 1, (m * SCALE) | 0)]++; inRegion++; }
       }
+    // ADAPTIVE threshold: the inter-sticker gap edges are the strongest gradients in
+    // the zone, so the ~82nd percentile of in-zone magnitudes tracks them — it drops
+    // where contrast is low (DARK stickers vs black gap: weak but still top edges)
+    // and rises under glare. Clamped so a flat patch can't hallucinate edges.
+    let T = colorThreshold;
+    if (adaptive && inRegion > 500) {
+      const target = inRegion * 0.82; let acc = 0, bin = 0;
+      for (; bin < BINS; bin++) { acc += hist[bin]; if (acc >= target) break; }
+      T = Math.max(60, Math.min(colorThreshold, bin / SCALE));   // never above the slider; can go down to catch faint gaps
+    }
+    for (let i = 0; i < frame; i++) if (mag[i] > T) edges[i] = 1;
     edges = this.dilate(edges, w, h, 1); // close 1-px gaps so regions are sealed
 
     // regions = non-edge connected components
@@ -117,12 +132,14 @@ export class ShapeDetector {
 
   // DEBUG: the dilated edge map used by detect() — lets a validation page show
   // exactly what the detector "sees" (where gaps do/don't produce edges).
-  debugEdges(img: ImageData, colorThreshold = 125): { edges: Uint8Array; w: number; h: number } {
+  debugEdges(img: ImageData, colorThreshold = 125, adaptive = false): { edges: Uint8Array; w: number; h: number; T: number } {
     const w = img.width, h = img.height, d = img.data, frame = w * h;
     const rA = new Float32Array(frame), gA = new Float32Array(frame), bA = new Float32Array(frame);
     for (let i = 0, j = 0; i < d.length; i += 4, j++) { rA[j] = d[i]; gA[j] = d[i + 1]; bA[j] = d[i + 2]; }
     const bR = this.blur(rA, w, h), bG = this.blur(gA, w, h), bB = this.blur(bA, w, h);
     let edges: Uint8Array = new Uint8Array(frame);
+    const mag = new Float32Array(frame);
+    const BINS = 256, SCALE = BINS / 1800; const hist = new Int32Array(BINS); let cnt = 0;
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
       const gxR = (bR[i - w + 1] + 2 * bR[i + 1] + bR[i + w + 1]) - (bR[i - w - 1] + 2 * bR[i - 1] + bR[i + w - 1]);
@@ -131,10 +148,14 @@ export class ShapeDetector {
       const gyG = (bG[i + w - 1] + 2 * bG[i + w] + bG[i + w + 1]) - (bG[i - w - 1] + 2 * bG[i - w] + bG[i - w + 1]);
       const gxB = (bB[i - w + 1] + 2 * bB[i + 1] + bB[i + w + 1]) - (bB[i - w - 1] + 2 * bB[i - 1] + bB[i + w - 1]);
       const gyB = (bB[i + w - 1] + 2 * bB[i + w] + bB[i + w + 1]) - (bB[i - w - 1] + 2 * bB[i - w] + bB[i - w + 1]);
-      if (Math.sqrt(gxR * gxR + gyR * gyR + gxG * gxG + gyG * gyG + gxB * gxB + gyB * gyB) > colorThreshold) edges[i] = 1;
+      const m = Math.sqrt(gxR * gxR + gyR * gyR + gxG * gxG + gyG * gyG + gxB * gxB + gyB * gyB);
+      mag[i] = m; if (adaptive) { hist[Math.min(BINS - 1, (m * SCALE) | 0)]++; cnt++; }
     }
+    let T = colorThreshold;
+    if (adaptive && cnt > 500) { const target = cnt * 0.82; let acc = 0, bin = 0; for (; bin < BINS; bin++) { acc += hist[bin]; if (acc >= target) break; } T = Math.max(60, Math.min(colorThreshold, bin / SCALE)); }
+    for (let i = 0; i < frame; i++) if (mag[i] > T) edges[i] = 1;
     edges = this.dilate(edges, w, h, 1);
-    return { edges, w, h };
+    return { edges, w, h, T: Math.round(T) };
   }
 
   // WHITE facelets are the hardest for the edge pass: they glare, desaturate, and
