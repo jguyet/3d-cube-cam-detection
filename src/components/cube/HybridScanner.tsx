@@ -269,13 +269,6 @@ export default function HybridScanner() {
     tracksRef.current = tracks.filter((t) => t.ttl > 0);
     const tracked = tracksRef.current.map((t) => t.shape);
 
-    // tracked stickers (faint; fresher = brighter)
-    for (const t of tracksRef.current) {
-      ctx.lineWidth = 1; ctx.strokeStyle = `rgba(255,255,255,${(0.15 + 0.25 * (t.ttl / TTL)).toFixed(2)})`;
-      ctx.beginPath(); t.shape.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-      ctx.closePath(); ctx.stroke();
-    }
-
     // ---- LIAISONS (primary display): connect DETECTED sticker centres to their
     // grid neighbours — coherent cube-structure links, nothing invented/inferred.
     // Solid green = adjacent; dashed = same row/col skipping one missing cell.
@@ -304,6 +297,14 @@ export default function HybridScanner() {
         const sh = tracked.find((t) => Math.hypot(t.center.x - c.x, t.center.y - c.y) < 6);
         if (sh) shapeMem.learn(sh);
       }
+    }
+    // faint sticker outlines ONLY for quads that BELONG to a coherent grid (i.e. on
+    // the cube). An out-of-cube false positive joins no 3×3 grid → not drawn, not
+    // used → zero out-of-cube FPs by construction.
+    for (const lat of lattices) for (const c of lat.centres) {
+      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255,255,255,0.3)";
+      ctx.beginPath(); c.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.closePath(); ctx.stroke();
     }
     let nLinks = 0, nFound = 0;
     const mem = memRef.current;
