@@ -36,6 +36,12 @@ export function detectStickers(det: ShapeDetector, image: ImageData): { shapes: 
     if (ref > 0) { const r = side / ref; if (r < 0.55 || r > 1.8) continue; }
     shapes.push(wsh); whiteCount++;
   }
+  // SQUARE gate: a sticker is a solid near-square (fills its rect, aspect ~1).
+  shapes = shapes.filter((s) => {
+    const s1 = Math.hypot(s.corners[0].x - s.corners[1].x, s.corners[0].y - s.corners[1].y);
+    const s2 = Math.hypot(s.corners[1].x - s.corners[2].x, s.corners[1].y - s.corners[2].y);
+    return s.fill >= 0.72 && Math.max(s1, s2) / (Math.min(s1, s2) || 1) <= 1.5;
+  });
   // BLACK gate: a real facelet has NO black inside — a quad containing black
   // straddles the plastic gap or is a false positive (no black facelets exist).
   shapes = shapes.filter((s) => darkFraction(s.corners, image.data, W, H) <= 0.2);

@@ -41,7 +41,7 @@ export default function HybridScanner() {
   // sticker HISTORY across frames: recently-seen stickers persist a few frames so
   // the links don't flicker with per-frame detection dropouts
   type TrackedShape = { corners: [Point2, Point2, Point2, Point2]; center: Point2; area: number; fill: number };
-  const tracksRef = useRef<{ shape: TrackedShape; ttl: number }[]>([]);
+  const tracksRef = useRef<{ shape: TrackedShape; ttl: number; hits: number }[]>([]);
   const coastRef = useRef<{ corners: Point2[]; edges: [number, number][]; ttl: number } | null>(null); // hold last pose through dropouts
   const zoneRef = useRef<Zone | null>(null);                // temporally-stabilised ML zone
   const sizeRef = useRef<number | null>(null);              // smoothed expected sticker side (no abrupt switch)
@@ -204,6 +204,18 @@ export default function HybridScanner() {
       }
     }
 
+    // ---- SQUARE GATE: a sticker is a SOLID SQUARE. Its region must FILL its
+    // min-area rectangle well (solidity) and be near-square. An out-of-cube blob is
+    // irregular (low fill) or elongated → rejected. (user: "a square isn't complicated".)
+    let nSquare = 0;
+    shapes = shapes.filter((s) => {
+      const s1 = Math.hypot(s.corners[0].x - s.corners[1].x, s.corners[0].y - s.corners[1].y);
+      const s2 = Math.hypot(s.corners[1].x - s.corners[2].x, s.corners[1].y - s.corners[2].y);
+      const aspect = Math.max(s1, s2) / (Math.min(s1, s2) || 1);
+      if (s.fill < 0.72 || aspect > 1.5) { nSquare++; return false; }
+      return true;
+    });
+
     // ---- COLOUR GATE: drop quads whose interior is SKIN (finger), DARK, or that
     // CONTAIN BLACK. A real facelet is a solid cube colour with NO black inside —
     // any black means the quad straddles the plastic gap or is a false positive
@@ -262,7 +274,7 @@ export default function HybridScanner() {
     for (const t of tracks) t.ttl--;
     for (const s of shapes) {
       const side = Math.sqrt(Math.max(1, s.area));
-      let best: { shape: TrackedShape; ttl: number } | null = null, bd = Infinity;
+      let best: { shape: TrackedShape; ttl: number; hits: number } | null = null, bd = Infinity;
       for (const t of tracks) {
         const d = Math.hypot(t.shape.center.x - s.center.x, t.shape.center.y - s.center.y);
         if (d < bd) { bd = d; best = t; }
@@ -276,11 +288,14 @@ export default function HybridScanner() {
         const oc = orderQuad(best.shape.corners), nc = orderQuad(s.corners);
         const bc = oc.map((p, i) => ({ x: p.x + a * (nc[i].x - p.x), y: p.y + a * (nc[i].y - p.y) })) as [Point2, Point2, Point2, Point2];
         best.shape = { corners: bc, center: { x: (bc[0].x + bc[1].x + bc[2].x + bc[3].x) / 4, y: (bc[0].y + bc[1].y + bc[2].y + bc[3].y) / 4 }, area: best.shape.area + a * (s.area - best.shape.area), fill: s.fill };
-        best.ttl = TTL;
-      } else tracks.push({ shape: s as TrackedShape, ttl: TTL });
+        best.ttl = TTL; best.hits = Math.min(20, best.hits + 1);
+      } else tracks.push({ shape: s as TrackedShape, ttl: TTL, hits: 1 });
     }
     tracksRef.current = tracks.filter((t) => t.ttl > 0);
-    const tracked = tracksRef.current.map((t) => t.shape);
+    // TEMPORAL PERSISTENCE: only CONFIRMED tracks (seen ≥3 frames) are real. An
+    // out-of-cube false positive flickers (appears 1 frame at a jittery spot, never
+    // re-matches) → stays at hits=1 → never confirmed → never tracked/shown.
+    const tracked = tracksRef.current.filter((t) => t.hits >= 3).map((t) => t.shape);
 
     // ---- LIAISONS (primary display): connect DETECTED sticker centres to their
     // grid neighbours — coherent cube-structure links, nothing invented/inferred.
@@ -577,7 +592,7 @@ export default function HybridScanner() {
     ctx.fillStyle = nLinks ? "#a7f3d0" : "#fca5a5"; ctx.font = "13px system-ui";
     const pal = memRef.current ? memRef.current.ready() : 0;
     const shpReady = shapeMemRef.current?.ready() ? "✓" : "…";
-    ctx.fillText(`${nLinks} liais · ${tracked.length} stk${nFound ? `+${nFound}` : ""} · pal ${pal}/6 · rejets: ${nSkin}noir/peau ${nSize}taille ${nShape}forme`, 14, 25);
+    ctx.fillText(`${nLinks}L · ${tracked.length}stk${nFound ? `+${nFound}` : ""} · pal ${pal}/6 · rejets ${nSquare}carré/${nSkin}noir/${nSize}taille/${nShape}forme`, 14, 25);
   };
 
   const start = async () => {
