@@ -24,7 +24,6 @@ export class CubeSim {
   private group: THREE.Group;
   private facelets: THREE.Mesh[][] = [];      // [faceIdx][cell 0..8]
   private state: (CubeColour | null)[][] = Array.from({ length: 6 }, () => Array(9).fill(null));
-  private votes: Record<string, number>[][] = Array.from({ length: 6 }, () => Array.from({ length: 9 }, () => ({})));
   private target = new THREE.Quaternion();
   private scanned = new Set<number>();
   private raf = 0;
@@ -72,27 +71,15 @@ export class CubeSim {
   private CUBE = new Set<CubeColour>(["white", "yellow", "red", "orange", "green", "blue"]);
 
   // colour one face from a scan (cells ordered by gx + gy*3); centre colour selects it.
-  // Takes the CUBE STATE into account: each cell VOTES its colour over time, and the cell
-  // shows the running consensus (mode) — a one-off misread is out-voted and can't stick.
-  // Returns the count of cells whose new reading DISAGREED with the established consensus
-  // (a signal that this detection may be wrong).
-  setFace(centre: CubeColour, cells: CubeColour[]): number {
-    const fi = SCHEME[centre]; if (fi === undefined) return 0;
+  // Only real cube colours are stored/painted — completion only ever grows.
+  setFace(centre: CubeColour, cells: CubeColour[]) {
+    const fi = SCHEME[centre]; if (fi === undefined) return;
     this.scanned.add(fi);
-    let mismatch = 0;
     for (let k = 0; k < 9 && k < cells.length; k++) {
       const c = cells[k]; if (!this.CUBE.has(c)) continue;
-      if (k === 4) continue;                 // centre is fixed by the scheme — never vote it
-      const v = this.votes[fi][k];
-      const prev = this.state[fi][k];
-      if (prev && prev !== c) mismatch++;     // disagrees with the current consensus
-      v[c] = (v[c] ?? 0) + 1;
-      let best: CubeColour = c, bc = 0;
-      for (const name of Object.keys(v)) if (v[name] > bc) { bc = v[name]; best = name as CubeColour; }
-      this.state[fi][k] = best;
-      const mesh = this.facelets[fi][k]; if (mesh) (mesh.material as THREE.MeshStandardMaterial).color.set(colourHex(best));
+      this.state[fi][k] = c;
+      const mesh = this.facelets[fi][k]; if (mesh) (mesh.material as THREE.MeshStandardMaterial).color.set(colourHex(c));
     }
-    return mismatch;
   }
 
   // fraction of the 54 stickers known
@@ -116,7 +103,7 @@ export class CubeSim {
 
   setOrientation(q: { x: number; y: number; z: number; w: number }) { this.target.set(q.x, q.y, q.z, q.w); }
   scannedCount() { return this.scanned.size; }
-  reset() { this.scanned.clear(); this.state = Array.from({ length: 6 }, () => Array(9).fill(null)); this.votes = Array.from({ length: 6 }, () => Array.from({ length: 9 }, () => ({}))); for (const f of this.facelets) for (const m of f) (m.material as THREE.MeshStandardMaterial).color.set(0x2a2f3a); this.paintCentres(); }
+  reset() { this.scanned.clear(); this.state = Array.from({ length: 6 }, () => Array(9).fill(null)); for (const f of this.facelets) for (const m of f) (m.material as THREE.MeshStandardMaterial).color.set(0x2a2f3a); this.paintCentres(); }
 
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);

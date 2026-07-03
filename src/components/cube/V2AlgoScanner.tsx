@@ -33,7 +33,7 @@ export default function V2AlgoScanner() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [cubeInfo, setCubeInfo] = useState<{ pct: number; status: "valid" | "invalid" | "partial"; msg: string; mismatch: number }>({ pct: 0, status: "partial", msg: "", mismatch: 0 });
+  const [cubeInfo, setCubeInfo] = useState<{ pct: number; status: "valid" | "invalid" | "partial"; msg: string }>({ pct: 0, status: "partial", msg: "" });
   const frameRef = useRef(0);
 
   const [thr, setThr] = useState(72);
@@ -122,12 +122,11 @@ export default function V2AlgoScanner() {
     // ---- feed the 3D SIM: colours (per face) + gyroscope (protected dominant + others) ----
     const sim = simRef.current;
     if (sim && faces.length) {
-      let mism = 0;
       for (const f of faces) {
         const m = cell(f, 1, 1); if (!m || !CUBE.has(m.colour)) continue;
         const cells9: CubeColour[] = [];
         for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 3; gx++) cells9.push((cell(f, gx, gy)?.colour ?? "unknown") as CubeColour);
-        mism += sim.setFace(m.colour as CubeColour, cells9);
+        sim.setFace(m.colour as CubeColour, cells9);
       }
       const obs: FaceObs[] = [];
       // dominant face orientation from the PROTECTED slots (no teleport)
@@ -146,12 +145,12 @@ export default function V2AlgoScanner() {
       }
       const q = cubeOrientation(obs);
       if (q) sim.setOrientation(q);
-      if ((frameRef.current++ & 7) === 0) { const v = sim.validity(); setCubeInfo({ pct: Math.round(sim.completion() * 100), status: v.status, msg: v.msg, mismatch: mism }); }
+      if ((frameRef.current++ & 7) === 0) { const v = sim.validity(); setCubeInfo({ pct: Math.round(sim.completion() * 100), status: v.status, msg: v.msg }); }
     }
 
     // ---- draw ----
     const centres: { colour: string; frame: string }[] = [];
-    const NONCUBE = new Set(["dark", "skin"]);   // noir (gap) / beige (main) — never a sticker
+    const NONCUBE = new Set(["dark", "skin", "unknown"]);   // never a real sticker
     const drawCell = (corners: { x: number; y: number }[], center: { x: number; y: number }, colour: string, detected: boolean, label: string, col: string) => {
       // an IMAGINED (completed) cell is only legitimate on a real cube colour — never on a
       // black gap or a beige/skin region (hand). Those are not stickers, so don't draw them.
@@ -247,11 +246,6 @@ export default function V2AlgoScanner() {
               <span>{cubeInfo.status === "invalid" ? "✗" : cubeInfo.status === "valid" ? "✓" : "…"}</span>
               <span>lois Rubik : {cubeInfo.status === "invalid" ? cubeInfo.msg : cubeInfo.status === "valid" ? "valide" : `en cours — ${cubeInfo.msg}`}</span>
             </div>
-            {cubeInfo.mismatch > 0 && (
-              <div className="mt-1 flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-                <span>⚠</span><span>{cubeInfo.mismatch} case(s) contredisent l&apos;état — détection douteuse</span>
-              </div>
-            )}
           </div>
         </div>
       </div>
