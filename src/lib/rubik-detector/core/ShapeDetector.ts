@@ -25,7 +25,7 @@ export interface Shape {
 // colour boundaries (different facelets that touch with no gap still separate) and
 // (2) tags each shape with its mean colour, REJECTING black regions (a black patch is
 // never a facelet). `mem` classifies against the learned palette when supplied.
-export interface DetectOpts { colour?: boolean; mem?: ColourMemory; aspectMax?: number; minAreaFrac?: number }
+export interface DetectOpts { colour?: boolean; mem?: ColourMemory; aspectMax?: number; minAreaFrac?: number; motion?: boolean }
 
 // Fast colour quantiser mirroring classifyColour's buckets — returns a small int label
 // (or -1 unknown) for the colour-boundary edge map. Kept inline to avoid a per-pixel
@@ -75,8 +75,10 @@ export class ShapeDetector {
     }
     const bR = this.blur(rA, w, h), bG = this.blur(gA, w, h), bB = this.blur(bA, w, h);
 
-    // foreground (moving) mask — skipped when a cube region is supplied
-    const fg = region ? null : this.foreground(luma, cb, cr, w, h);
+    // foreground (moving) mask. Normally skipped when a region is supplied, but the
+    // `motion` opt forces it ON even with a region: the static decor converges into the
+    // per-pixel background model and its shapes are dropped, keeping only the moving cube.
+    const fg = (region && !opts?.motion) ? null : this.foreground(luma, cb, cr, w, h);
 
     // Edges ONLY on a BIG colour difference: the combined RGB gradient must
     // clear a high bar. Lighting/shadow gradients within a sticker are a small
@@ -186,14 +188,15 @@ export class ShapeDetector {
       shapes.push(shape);
     }
 
-    // Restrict to the cube zone when a region is given, then keep only the
-    // dominant cluster of stickers — the convex hull can bulge over hand/
-    // background, so isolated quads sneaking inside it are dropped here.
-    if (region) return this.dominantCluster(shapes.filter((s) => pointInPoly(s.center, region)));
-    // …otherwise keep only MOVING shapes (static background dropped). On the
-    // first frames (no model yet) everything passes until it settles.
-    if (!fg) return shapes;
-    return shapes.filter((s) => this.movingShape(s, fg, w, h));
+    let out = shapes;
+    // restrict to the cube zone when a region is given
+    if (region) out = out.filter((s) => pointInPoly(s.center, region));
+    // drop STATIC shapes (decor): keep only those over moving pixels. On the first frame
+    // (model still warming up) fg is null and everything passes.
+    if (fg) out = out.filter((s) => this.movingShape(s, fg, w, h));
+    // dominant cluster of stickers — isolated quads sneaking into the hull are dropped
+    if (region) out = this.dominantCluster(out);
+    return out;
   }
 
   // DEBUG: the dilated edge map used by detect() — lets a validation page show

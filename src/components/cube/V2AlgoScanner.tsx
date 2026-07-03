@@ -43,9 +43,10 @@ export default function V2AlgoScanner() {
   const [imagine, setImagine] = useState(true);
   const [showLinks, setShowLinks] = useState(true);
   const [stabilise, setStabilise] = useState(true);
+  const [subBg, setSubBg] = useState(true);
   const [res, setRes] = useState(560);
-  const r = useRef({ thr, adaptive, showWhite, splitBlocks, imagine, showLinks, stabilise });
-  r.current = { thr, adaptive, showWhite, splitBlocks, imagine, showLinks, stabilise };
+  const r = useRef({ thr, adaptive, showWhite, splitBlocks, imagine, showLinks, stabilise, subBg });
+  r.current = { thr, adaptive, showWhite, splitBlocks, imagine, showLinks, stabilise, subBg };
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -67,7 +68,7 @@ export default function V2AlgoScanner() {
     const region = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
     // COLOUR-AWARE discovery: colour boundaries split touching facelets, each shape is
     // tagged with its colour, black regions are rejected at the source.
-    let shapes = det.detect(image, o.thr, region, o.adaptive, { colour: true, mem, aspectMax: 5 });
+    let shapes = det.detect(image, o.thr, region, o.adaptive, { colour: true, mem, aspectMax: 5, motion: o.subBg });
     let whites = o.showWhite ? det.detectWhite(image, region, false) : [];
     if (o.splitBlocks) { shapes = det.splitMerged(shapes, image); whites = det.splitMerged(whites, image); }
     // FINAL BLACK FILTER: splitMerged / detectWhite sub-cells are created AFTER the
@@ -257,6 +258,7 @@ export default function V2AlgoScanner() {
         <label className="flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400"><input type="checkbox" checked={splitBlocks} onChange={(e) => setSplitBlocks(e.target.checked)} /> découper blocs</label>
         <label className="flex items-center gap-2 text-sm font-medium text-fuchsia-600 dark:text-fuchsia-400"><input type="checkbox" checked={imagine} onChange={(e) => setImagine(e.target.checked)} /> imaginer face complète</label>
         <label className="flex items-center gap-2 text-sm font-medium text-emerald-600 dark:text-emerald-400"><input type="checkbox" checked={stabilise} onChange={(e) => setStabilise(e.target.checked)} /> stabiliser (anti-shift)</label>
+        <label className="flex items-center gap-2 text-sm font-medium text-sky-600 dark:text-sky-400"><input type="checkbox" checked={subBg} onChange={(e) => setSubBg(e.target.checked)} /> retirer le fond</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400"><input type="checkbox" checked={showLinks} onChange={(e) => setShowLinks(e.target.checked)} /> liens</label>
         <label className="flex items-center gap-2 text-sm text-cyan-600 dark:text-cyan-400"><input type="checkbox" checked={showWhite} onChange={(e) => setShowWhite(e.target.checked)} /> blanc</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
