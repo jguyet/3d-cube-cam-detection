@@ -22,6 +22,8 @@ export default function V2AlgoScanner() {
   const detRef = useRef<ShapeDetector | null>(null);
   const memRef = useRef<ColourMemory | null>(null);
   const trackRef = useRef<FaceTracker | null>(null);
+  const activeRef = useRef(false);      // presence hysteresis state
+  const presMissRef = useRef(0);
   const rafRef = useRef(0);
 
   const [status, setStatus] = useState<Status>("idle");
@@ -85,8 +87,27 @@ export default function V2AlgoScanner() {
     // cube; isolated background faces are dropped. Free background rejection, no model.
     const faces = keepDominantCluster(detectCubeFaces(all, { image, mem }));
 
+    // ---- PRESENCE (no ML): confidence = the best face's number of DETECTED, cube-coloured
+    // cells. A real face scores 6-9; background clutter almost never clears 5. Schmitt
+    // hysteresis (on ≥5, off after several <3 frames) so it can't blink.
+    const CUBE = new Set(["white", "yellow", "red", "orange", "green", "blue"]);
+    const conf = faces.reduce((m, f) => Math.max(m, f.cells.filter((c) => c.detected && CUBE.has(c.colour)).length), 0);
+    if (!activeRef.current) {
+      if (conf >= 5) { activeRef.current = true; presMissRef.current = 0; }
+      else {
+        trackRef.current!.update(null);
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26);
+        ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText(`aucun cube (${conf}/9)`, 12, 24);
+        return;
+      }
+    } else if (conf < 3) {
+      if (++presMissRef.current >= 5) { activeRef.current = false; presMissRef.current = 0; trackRef.current!.update(null);
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26); ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText("aucun cube", 12, 24); return; }
+    } else presMissRef.current = 0;
+
     // TEMPORAL STABILISATION of the dominant face (anti-shift): feed it to the tracker
     // and draw the smoothed, colour-voted, label-stable slots instead of the raw cells.
+    const centres: { colour: string; frame: string }[] = [];   // each face's CENTRE cell colour
     const drawCell = (corners: { x: number; y: number }[], center: { x: number; y: number }, colour: string, detected: boolean, label: string, col: string) => {
       if (!detected && !o.imagine) return;
       const fillCol = colour !== "unknown" ? colourHex(colour as never) : undefined;
@@ -101,13 +122,28 @@ export default function V2AlgoScanner() {
       const slots = trackRef.current!.update(faces[0] ?? null);
       const col = FACE_COL[0];
       for (const s of slots) drawCell(s.corners, { x: s.cx, y: s.cy }, trackRef.current!.colourOf(s), s.detected, `${s.gx}${s.gy}`, col);
+      const mid = slots.find((s) => s.gx === 1 && s.gy === 1);
+      if (mid) centres.push({ colour: trackRef.current!.colourOf(mid), frame: col });
       // draw any secondary faces raw (rare) so multi-face still shows
       let fi = 1;
-      for (const face of faces.slice(1)) { const c = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, c); }
+      for (const face of faces.slice(1)) { const c = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, c); const m = face.cells.find((cl) => cl.gx === 1 && cl.gy === 1); if (m) centres.push({ colour: m.colour, frame: c }); }
     } else {
       trackRef.current!.reset();
       let fi = 0;
-      for (const face of faces) { const col = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, col); }
+      for (const face of faces) { const col = FACE_COL[fi++ % FACE_COL.length]; for (const cell of face.cells) drawCell(cell.corners, cell.center, cell.colour, cell.detected, `${cell.gx}${cell.gy}`, col); const m = face.cells.find((cl) => cl.gx === 1 && cl.gy === 1); if (m) centres.push({ colour: m.colour, frame: col }); }
+    }
+
+    // ---- CENTRE-CELL ZONE: the fixed centre sticker of each face (its identity) ----
+    if (centres.length) {
+      const sw = 34, pad = 6, x0 = W - (centres.length * (sw + pad) + pad), y0 = 8;
+      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(x0 - pad, y0 - pad, centres.length * (sw + pad) + pad * 2, sw + pad * 2 + 14);
+      ctx.fillStyle = "#e5e7eb"; ctx.font = "10px monospace"; ctx.fillText("centres", x0, y0 - pad + 10);
+      centres.forEach((c, i) => {
+        const cx = x0 + i * (sw + pad), cy = y0 + 12;
+        ctx.fillStyle = c.colour !== "unknown" ? colourHex(c.colour as never) : "#334155";
+        ctx.fillRect(cx, cy, sw, sw);
+        ctx.lineWidth = 3; ctx.strokeStyle = c.frame; ctx.strokeRect(cx, cy, sw, sw);
+      });
     }
 
     // centre dots
