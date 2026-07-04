@@ -35,7 +35,7 @@ export default function V2AlgoScanner() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [cubeInfo, setCubeInfo] = useState<{ pct: number; status: "valid" | "invalid" | "partial"; msg: string }>({ pct: 0, status: "partial", msg: "" });
+  const [cubeInfo, setCubeInfo] = useState<{ pct: number; status: "valid" | "invalid" | "partial"; msg: string; solvable?: { ok: boolean; reasons: string[] } | null }>({ pct: 0, status: "partial", msg: "" });
   const frameRef = useRef(0);
 
   const [thr, setThr] = useState(72);
@@ -149,7 +149,7 @@ export default function V2AlgoScanner() {
       }
       const q = cubeOrientation(obs);
       if (q) sim.setOrientation(q);
-      if ((frameRef.current++ & 7) === 0) { const v = cstate.validity(); setCubeInfo({ pct: Math.round(cstate.completion() * 100), status: v.status, msg: v.msg }); }
+      if ((frameRef.current++ & 7) === 0) { const v = cstate.validity(); setCubeInfo({ pct: Math.round(cstate.completion() * 100), status: v.status, msg: v.msg, solvable: cstate.solvable() }); }
     }
 
     // ---- draw ----
@@ -251,6 +251,12 @@ export default function V2AlgoScanner() {
               <span>{cubeInfo.status === "invalid" ? "✗" : cubeInfo.status === "valid" ? "✓" : "…"}</span>
               <span>lois Rubik : {cubeInfo.status === "invalid" ? cubeInfo.msg : cubeInfo.status === "valid" ? "valide" : `en cours — ${cubeInfo.msg}`}</span>
             </div>
+            {cubeInfo.solvable && (
+              <div className={`mt-1 flex items-start gap-1.5 text-xs font-medium ${cubeInfo.solvable.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                <span>{cubeInfo.solvable.ok ? "✓" : "✗"}</span>
+                <span>{cubeInfo.solvable.ok ? "physiquement résolvable" : `impossible : ${cubeInfo.solvable.reasons.join(", ")}`}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -5,6 +5,7 @@
 // mid-turn with few clean cells) are rejected so they can't pollute the votes.
 
 import type { CubeColour } from "@/lib/ml/stickerColor";
+import { checkSolvable, type Solvable } from "@/lib/ml/cubeSolvable";
 
 export const SCHEME: Record<string, number> = { white: 0, yellow: 1, green: 2, blue: 3, red: 4, orange: 5 };
 export const CENTRE: CubeColour[] = ["white", "yellow", "green", "blue", "red", "orange"];   // by faceId
@@ -65,6 +66,17 @@ export class CubeState {
     let filled = 0; for (const c of Object.keys(m)) filled += m[c];
     if (filled === 54) return { status: "valid", msg: "cube complet & valide" };
     return { status: "partial", msg: `${this.seen.size}/6 faces vues` };
+  }
+
+  // PHYSICAL solvability of the confirmed state (the 3 deep laws). Returns null while the
+  // scan is incomplete. faceId→Kociemba face offset: U/white 0, R/red 9, F/green 18,
+  // D/yellow 27, L/orange 36, B/blue 45.
+  private static OFF = [0, 27, 18, 45, 9, 36];   // by faceId (white,yellow,green,blue,red,orange)
+  solvable(): Solvable | null {
+    const f: (CubeColour | null)[] = new Array(54).fill(null);
+    for (let fi = 0; fi < 6; fi++) for (let k = 0; k < 9; k++) f[CubeState.OFF[fi] + k] = this.colour(fi, k);
+    if (f.some((x) => !x)) return null;      // incomplete
+    return checkSolvable(f);
   }
 
   reset() { this.votes = Array.from({ length: 6 }, () => Array.from({ length: 9 }, () => ({}))); this.seen.clear(); this.lastFace = -1; }
