@@ -9,7 +9,6 @@ import { FaceTracker } from "@/lib/ml/faceTrack";
 import { CubeSim } from "@/lib/ml/cubeSim";
 import { CubeState } from "@/lib/ml/cubeState";
 import { cubeOrientation, type FaceObs } from "@/lib/ml/facePose";
-import { CubeMotion } from "@/lib/ml/cubeMotion";
 import type { CubeColour } from "@/lib/ml/stickerColor";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -30,7 +29,6 @@ export default function V2AlgoScanner() {
   const cubeCanvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<CubeSim | null>(null);
   const stateRef = useRef<CubeState | null>(null);
-  const motionRef = useRef<CubeMotion | null>(null);
   const activeRef = useRef(false);      // presence hysteresis state
   const presMissRef = useRef(0);
   const rafRef = useRef(0);
@@ -97,44 +95,24 @@ export default function V2AlgoScanner() {
     // ---- DETECT FACES: each face is a full 3×3 (9 cells), detected + completed ----
     // Self-localisation (no ML): keep only the dominant cluster of adjacent faces → the
     // cube; isolated background faces are dropped. Free background rejection, no model.
-    let faces = keepDominantCluster(detectCubeFaces(all, { image, mem }));
-    const motion = motionRef.current!;
-    const faceCentroid = (f: typeof faces[0]) => { let x = 0, y = 0; for (const c of f.cells) { x += c.center.x; y += c.center.y; } return { x: x / f.cells.length, y: y / f.cells.length }; };
+    const faces = keepDominantCluster(detectCubeFaces(all, { image, mem }));
 
-    // ---- MOTION GATE (anti out-of-cube): once we have a confident track, the cube can
-    // only be NEAR its predicted position (extrapolated from past velocity). A face that
-    // appears far from the prediction is background clutter → reject it. The radius grows
-    // with speed so a fast move isn't clipped.
-    if (motion.pos && motion.confidence() > 0.3) {
-      const gateR = 2.2 * (motion.pitch || 30) + motion.speed() * 2.5 + 40;
-      faces = faces.filter((f) => { const c = faceCentroid(f); return Math.hypot(c.x - motion.pos!.x, c.y - motion.pos!.y) < gateR; });
-    }
-
-    // ---- PRESENCE: confidence = the best face's number of DETECTED, cube-coloured cells.
+    // ---- PRESENCE (no ML): confidence = the best face's number of DETECTED, cube-coloured
+    // cells. A real face scores 6-9; background clutter almost never clears 5. Schmitt
+    // hysteresis (on ≥5, off after several <3 frames) so it can't blink.
     const CUBE = new Set(["white", "yellow", "red", "orange", "green", "blue"]);
     const conf = faces.reduce((m, f) => Math.max(m, f.cells.filter((c) => c.detected && CUBE.has(c.colour)).length), 0);
-    // lost this frame → COAST on the motion model (predict where the cube is, even off-frame)
-    const coast = () => {
-      trackRef.current!.update(null);
-      const p = motion.predict();
-      if (p && motion.confidence() > 0.15) {
-        const s = (motion.pitch || 30) * 1.5;
-        ctx.save(); ctx.globalAlpha = 0.35 + 0.4 * motion.confidence();
-        ctx.setLineDash([6, 5]); ctx.lineWidth = 2; ctx.strokeStyle = "#38bdf8";
-        ctx.strokeRect(p.x - s, p.y - s, 2 * s, 2 * s);
-        ctx.setLineDash([]); ctx.fillStyle = "#38bdf8";
-        ctx.fillText(`cube prédit (${motion.lost}f, ${(motion.confidence() * 100) | 0}%)`, Math.min(W - 150, Math.max(4, p.x - s)), Math.max(14, p.y - s - 4));
-        // velocity arrow
-        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + motion.vel.x * 5, p.y + motion.vel.y * 5); ctx.stroke();
-        ctx.restore();
-      }
-    };
     if (!activeRef.current) {
       if (conf >= 5) { activeRef.current = true; presMissRef.current = 0; }
-      else { coast(); ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26); ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText(`aucun cube (${conf}/9)`, 12, 24); return; }
-    } else if (conf < 3) {   // lost / gated out → COAST on the prediction (deactivate after 5)
-      if (++presMissRef.current >= 5) { activeRef.current = false; presMissRef.current = 0; }
-      coast(); ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26); ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText(`suivi prédit (${motion.lost}f)`, 12, 24); return;
+      else {
+        trackRef.current!.update(null);
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26);
+        ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText(`aucun cube (${conf}/9)`, 12, 24);
+        return;
+      }
+    } else if (conf < 3) {
+      if (++presMissRef.current >= 5) { activeRef.current = false; presMissRef.current = 0; trackRef.current!.update(null);
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26); ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText("aucun cube", 12, 24); return; }
     } else presMissRef.current = 0;
 
     const cell = (f: typeof faces[0], gx: number, gy: number) => f.cells.find((c) => c.gx === gx && c.gy === gy);
@@ -171,8 +149,6 @@ export default function V2AlgoScanner() {
       }
       const q = cubeOrientation(obs);
       if (q) sim.setOrientation(q);
-      // feed the motion model: real observation → updates position, velocity, orientation
-      motion.observe(faceCentroid(faces[0]), faces[0].pitch || 30, q ?? motion.quat);
       if ((frameRef.current++ & 7) === 0) { const v = cstate.validity(); setCubeInfo({ pct: Math.round(cstate.completion() * 100), status: v.status, msg: v.msg, solvable: cstate.solvable() }); }
     }
 
@@ -233,7 +209,6 @@ export default function V2AlgoScanner() {
       memRef.current = new ColourMemory(); memRef.current.load(); memRef.current.seedCanonical();
       trackRef.current = new FaceTracker();
       stateRef.current = new CubeState();
-      motionRef.current = new CubeMotion();
       if (cubeCanvasRef.current) { simRef.current = new CubeSim(cubeCanvasRef.current); simRef.current.resize(cubeCanvasRef.current.clientWidth || 320, cubeCanvasRef.current.clientHeight || 320); }
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
