@@ -9,6 +9,7 @@ import { FaceTracker } from "@/lib/ml/faceTrack";
 import { CubeSim } from "@/lib/ml/cubeSim";
 import { CubeState } from "@/lib/ml/cubeState";
 import { cubeOrientation, type FaceObs } from "@/lib/ml/facePose";
+import { CubeMotion } from "@/lib/ml/cubeMotion";
 import type { CubeColour } from "@/lib/ml/stickerColor";
 
 type Status = "idle" | "loading" | "scanning" | "error";
@@ -29,6 +30,7 @@ export default function V2AlgoScanner() {
   const cubeCanvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<CubeSim | null>(null);
   const stateRef = useRef<CubeState | null>(null);
+  const motionRef = useRef<CubeMotion | null>(null);
   const activeRef = useRef(false);      // presence hysteresis state
   const presMissRef = useRef(0);
   const rafRef = useRef(0);
@@ -95,24 +97,48 @@ export default function V2AlgoScanner() {
     // ---- DETECT FACES: each face is a full 3×3 (9 cells), detected + completed ----
     // Self-localisation (no ML): keep only the dominant cluster of adjacent faces → the
     // cube; isolated background faces are dropped. Free background rejection, no model.
-    const faces = keepDominantCluster(detectCubeFaces(all, { image, mem }));
+    let faces = keepDominantCluster(detectCubeFaces(all, { image, mem }));
+    const motion = motionRef.current!;
+    const faceCentroid = (f: typeof faces[0]) => { let x = 0, y = 0; for (const c of f.cells) { x += c.center.x; y += c.center.y; } return { x: x / f.cells.length, y: y / f.cells.length }; };
+    // SILENT anti-out-of-cube gate: with a confident track, drop faces not ON the cube
+    // (generous radius, grows with speed → never clips the real cube, only far clutter).
+    if (motion.pos && motion.confidence() > 0.5) faces = faces.filter((f) => motion.contains(faceCentroid(f)));
 
     // ---- PRESENCE (no ML): confidence = the best face's number of DETECTED, cube-coloured
     // cells. A real face scores 6-9; background clutter almost never clears 5. Schmitt
     // hysteresis (on ≥5, off after several <3 frames) so it can't blink.
     const CUBE = new Set(["white", "yellow", "red", "orange", "green", "blue"]);
     const conf = faces.reduce((m, f) => Math.max(m, f.cells.filter((c) => c.detected && CUBE.has(c.colour)).length), 0);
+    // draw the predicted "ghost" ONLY when the cube has been truly lost for a while — never
+    // during a 1-frame dip while it's present (that was the earlier flicker).
+    const drawGhost = () => {
+      const p = motion.predict();
+      if (!p || motion.lost < 6 || motion.confidence() < 0.2) return false;
+      const s = (motion.pitch || 30) * 1.5;
+      ctx.save(); ctx.globalAlpha = 0.3 + 0.4 * motion.confidence(); ctx.setLineDash([6, 5]); ctx.lineWidth = 2; ctx.strokeStyle = "#38bdf8";
+      ctx.strokeRect(p.x - s, p.y - s, 2 * s, 2 * s);
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + motion.vel.x * 5, p.y + motion.vel.y * 5); ctx.stroke(); ctx.restore();
+      return true;
+    };
     if (!activeRef.current) {
       if (conf >= 5) { activeRef.current = true; presMissRef.current = 0; }
       else {
         trackRef.current!.update(null);
+        const ghost = drawGhost();
         ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26);
-        ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText(`aucun cube (${conf}/9)`, 12, 24);
+        ctx.fillStyle = ghost ? "#7dd3fc" : "#fca5a5"; ctx.font = "14px monospace";
+        ctx.fillText(ghost ? `cube prédit (${motion.lost}f)` : `aucun cube (${conf}/9)`, 12, 24);
         return;
       }
     } else if (conf < 3) {
-      if (++presMissRef.current >= 5) { activeRef.current = false; presMissRef.current = 0; trackRef.current!.update(null);
-        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26); ctx.fillStyle = "#fca5a5"; ctx.font = "14px monospace"; ctx.fillText("aucun cube", 12, 24); return; }
+      if (++presMissRef.current >= 5) {   // sustained loss → deactivate; show the ghost
+        activeRef.current = false; presMissRef.current = 0; trackRef.current!.update(null);
+        const ghost = drawGhost();
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(6, 6, 190, 26);
+        ctx.fillStyle = ghost ? "#7dd3fc" : "#fca5a5"; ctx.font = "14px monospace";
+        ctx.fillText(ghost ? `cube prédit (${motion.lost}f)` : "aucun cube", 12, 24); return;
+      }
+      // brief dip (still active): fall through — the FaceTracker coasts the overlay, no ghost
     } else presMissRef.current = 0;
 
     const cell = (f: typeof faces[0], gx: number, gy: number) => f.cells.find((c) => c.gx === gx && c.gy === gy);
@@ -149,6 +175,8 @@ export default function V2AlgoScanner() {
       }
       const q = cubeOrientation(obs);
       if (q) sim.setOrientation(q);
+      // update the motion model from a SOLID detection only (keeps velocity/pos clean)
+      if (conf >= 4 && faces[0]) motion.observe(faceCentroid(faces[0]), faces[0].pitch || 30, q ?? motion.quat);
       if ((frameRef.current++ & 7) === 0) { const v = cstate.validity(); setCubeInfo({ pct: Math.round(cstate.completion() * 100), status: v.status, msg: v.msg, solvable: cstate.solvable() }); }
     }
 
@@ -209,6 +237,7 @@ export default function V2AlgoScanner() {
       memRef.current = new ColourMemory(); memRef.current.load(); memRef.current.seedCanonical();
       trackRef.current = new FaceTracker();
       stateRef.current = new CubeState();
+      motionRef.current = new CubeMotion();
       if (cubeCanvasRef.current) { simRef.current = new CubeSim(cubeCanvasRef.current); simRef.current.resize(cubeCanvasRef.current.clientWidth || 320, cubeCanvasRef.current.clientHeight || 320); }
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
