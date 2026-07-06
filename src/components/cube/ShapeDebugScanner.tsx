@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraStream, FrameGrabber } from "@/lib/rubik-detector";
 import { ShapeDetector } from "@/lib/rubik-detector/core/ShapeDetector";
-import { sampleQuadRGB, classifyColour, colourHex } from "@/lib/ml/stickerColor";
+import { sampleQuadRGB, classifyColour, colourHex, ColourMemory } from "@/lib/ml/stickerColor";
 
 type Status = "idle" | "loading" | "scanning" | "error";
 
@@ -16,6 +16,7 @@ export default function ShapeDebugScanner() {
   const cameraRef = useRef<CameraStream | null>(null);
   const grabberRef = useRef<FrameGrabber | null>(null);
   const detRef = useRef<ShapeDetector | null>(null);
+  const memRef = useRef<ColourMemory | null>(null);
   const rafRef = useRef(0);
 
   const [status, setStatus] = useState<Status>("idle");
@@ -26,9 +27,10 @@ export default function ShapeDebugScanner() {
   const [showWhite, setShowWhite] = useState(true);
   const [showEdges, setShowEdges] = useState(false);
   const [showColour, setShowColour] = useState(true);
+  const [colourEdges, setColourEdges] = useState(true);
   const [res, setRes] = useState(560);
-  const r = useRef({ thr, adaptive, showWhite, showEdges, showColour });
-  r.current = { thr, adaptive, showWhite, showEdges, showColour };
+  const r = useRef({ thr, adaptive, showWhite, showEdges, showColour, colourEdges });
+  r.current = { thr, adaptive, showWhite, showEdges, showColour, colourEdges };
 
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); cameraRef.current?.stop(); }, []);
 
@@ -56,7 +58,7 @@ export default function ShapeDebugScanner() {
 
     // detect() quads (region = whole frame so nothing is zone-gated)
     const region = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
-    const shapes = det.detect(image, o.thr, region, o.adaptive);
+    const shapes = det.detect(image, o.thr, region, o.adaptive, o.colourEdges ? { colour: true, mem: memRef.current!, aspectMax: 5 } : { aspectMax: 5 });
     const whites = o.showWhite ? det.detectWhite(image, region, false) : [];
 
     const drawQuad = (corners: { x: number; y: number }[], stroke: string, fillCol?: string) => {
@@ -83,6 +85,7 @@ export default function ShapeDebugScanner() {
     setError(null); setStatus("loading");
     try {
       detRef.current = new ShapeDetector();
+      memRef.current = new ColourMemory(); memRef.current.seedCanonical();
       const camera = new CameraStream();
       await camera.start(videoRef.current!);
       cameraRef.current = camera;
@@ -127,6 +130,7 @@ export default function ShapeDebugScanner() {
         <label className="flex items-center gap-2 text-sm text-cyan-600 dark:text-cyan-400"><input type="checkbox" checked={showWhite} onChange={(e) => setShowWhite(e.target.checked)} /> détection blanc</label>
         <label className="flex items-center gap-2 text-sm text-fuchsia-600 dark:text-fuchsia-400"><input type="checkbox" checked={showEdges} onChange={(e) => setShowEdges(e.target.checked)} /> carte d&apos;arêtes</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400"><input type="checkbox" checked={showColour} onChange={(e) => setShowColour(e.target.checked)} /> couleur des quads</label>
+        <label className="flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400"><input type="checkbox" checked={colourEdges} onChange={(e) => setColourEdges(e.target.checked)} /> frontières couleur (vrai pipeline)</label>
         <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
           résolution
           <select value={res} onChange={(e) => setRes(+e.target.value)} disabled={status === "scanning"} className="rounded bg-slate-100 px-2 py-1 dark:bg-slate-800">
