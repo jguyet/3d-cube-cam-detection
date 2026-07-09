@@ -5,6 +5,7 @@ import { Canvas } from "@react-three/fiber";
 import CubeScene, { type CubeController } from "./CubeScene";
 import FaceletEditor from "./FaceletEditor";
 import { readGan356iFacelets } from "@/lib/cube/gan356i";
+import { patternToFacelets } from "@/lib/cube/patternToFacelets";
 
 type Status = "idle" | "connecting" | "connected" | "error";
 
@@ -22,6 +23,8 @@ interface SmartPuzzle {
   // GAN 356 i internals (present at runtime on the GanCube instance).
   server?: BluetoothRemoteGATTServer;
   readFaceletStatus1Characteristic?: () => Promise<ArrayBufferLike>;
+  // absolute state: GiiKER (and other cubing.js puzzles) report it directly.
+  getPattern?: () => Promise<unknown>;
 }
 
 export default function SmartCubeConnect() {
@@ -51,23 +54,35 @@ export default function SmartCubeConnect() {
     };
   }, []);
 
-  // Read the cube's tracked state and paint the 3D cube with it.
+  // Read the cube's ABSOLUTE state on connect and paint the 3D cube with it, so no
+  // "mark solved" reference is needed. GAN 356 i needs a custom facelet decode; GiiKER and
+  // other cubing.js puzzles report their real state directly via getPattern().
   const applyRealState = async () => {
     const gan = puzzle.current;
-    if (!gan?.readFaceletStatus1Characteristic || !gan.server || !ctrl.current) return;
-    try {
-      const { facelets, info } = await readGan356iFacelets({
-        server: gan.server,
-        readFaceletStatus1Characteristic: gan.readFaceletStatus1Characteristic.bind(gan),
-      });
-      dbg(`stickers ${info.counts} ${info.ok ? "✅" : "⚠️ invalide"}`);
-      dbg("facelets " + facelets);
-      if (info.ok) {
-        lastFacelets.current = facelets;
-        ctrl.current.setFacelets(facelets);
-      }
-    } catch (e) {
-      dbg("ERREUR: " + (e instanceof Error ? e.message : String(e)));
+    if (!gan || !ctrl.current) return;
+    // 1) GAN 356 i — custom decode of its facelet characteristic
+    if (gan.readFaceletStatus1Characteristic && gan.server) {
+      try {
+        const { facelets, info } = await readGan356iFacelets({
+          server: gan.server,
+          readFaceletStatus1Characteristic: gan.readFaceletStatus1Characteristic.bind(gan),
+        });
+        dbg(`stickers ${info.counts} ${info.ok ? "✅" : "⚠️ invalide"}`);
+        dbg("facelets " + facelets);
+        if (info.ok) { lastFacelets.current = facelets; ctrl.current.setFacelets(facelets); }
+        return;
+      } catch (e) { dbg("GAN: " + (e instanceof Error ? e.message : String(e))); }
+    }
+    // 2) GiiKER & others — cubing.js decodes the absolute state; getPattern() gives it
+    if (gan.getPattern) {
+      try {
+        const pattern = await gan.getPattern();
+        const facelets = patternToFacelets(pattern as never);
+        dbg("état lu (getPattern) " + facelets);
+        if (facelets.length === 54) { lastFacelets.current = facelets; ctrl.current.setFacelets(facelets); }
+      } catch (e) { dbg("getPattern: " + (e instanceof Error ? e.message : String(e))); }
+    } else {
+      dbg("pas d'état absolu exposé → réf. « résolu » requise");
     }
   };
 
